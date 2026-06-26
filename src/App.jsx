@@ -1082,7 +1082,7 @@ function HomeScreen({employee,onLogout}){
     calc();
     const t=setInterval(calc,30000);
     return ()=>clearInterval(t);
-  },[isCheckedIn]);
+  },[isCheckedIn, employee.id]);
 
   return(
     <div style={S.appWrap}>
