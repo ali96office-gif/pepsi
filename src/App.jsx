@@ -3,7 +3,7 @@ import { useState, useEffect } from "react";
 // ══════════════════════════════════════════════════════════════
 //  ربط Google Sheets
 // ══════════════════════════════════════════════════════════════
-const GS_URL = "https://script.google.com/macros/s/AKfycbxd-dJCSkOkgbeUw83dZAFW8WpI8DFdXDQNFHMDRJKYoXZNJCH75NAAuqgdHvm57to/exec";
+const GS_URL = "https://script.google.com/macros/s/AKfycbyY-t08HCe2cVAViZvrQJbo1yiXgnzESp9v6_g0CqTxb1fK4migbc2pnhEoK1nf7mWe/exec";
 
 async function gsSaveAttendance(emp, record) {
   try {
@@ -77,6 +77,28 @@ function gsGetEmployees() {
       resolve([]);
     }
   });
+}
+
+async function gsGetAttendance() {
+  try {
+    const response = await fetch(`${GS_URL}?action=getAttendance`);
+    const data = await response.json();
+    return data.records || [];
+  } catch (e) {
+    console.warn("gsGetAttendance failed", e);
+    return [];
+  }
+}
+
+async function gsGetExcusesAll() {
+  try {
+    const response = await fetch(`${GS_URL}?action=getExcuses`);
+    const data = await response.json();
+    return data.excuses || [];
+  } catch (e) {
+    console.warn("gsGetExcuses failed", e);
+    return [];
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -591,12 +613,19 @@ function AdminPanel({onLogout}){
     setFilter(f=>f);
   }
 
+  if(dataLoading) return(
+    <div style={{...S.appWrap,justifyContent:"center",alignItems:"center",display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{width:48,height:48,border:"4px solid #e2e8f0",borderTop:"4px solid #6366f1",borderRadius:"50%",animation:"spin 1s linear infinite"}}/>
+      <p style={{color:"#64748b",fontSize:14,fontWeight:600}}>جارٍ تحميل البيانات...</p>
+    </div>
+  );
+
   return(
     <div style={S.appWrap}>
       <div style={{...S.header,background:"linear-gradient(135deg,#1e1b4b,#4c1d95)"}}>
         <button style={S.logoutBtn} onClick={onLogout}>خروج</button>
         <span style={S.headerTitle}>🛡️ لوحة المدير</span>
-        <div style={{width:60}}/>
+        <button onClick={loadAllData} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,color:"#fff",fontSize:12,fontWeight:700,padding:"6px 12px",cursor:"pointer"}}>🔄</button>
       </div>
 
       {/* Tabs */}
@@ -617,7 +646,7 @@ function AdminPanel({onLogout}){
         {tab==="records"&&<>
           <div style={{...S.statsRow,margin:"16px 16px 0"}}>
             <div style={{...S.statBox,borderTop:"3px solid #6366f1"}}>
-              <p style={S.statNum}>{EMPLOYEES.length}</p><p style={S.statLabel}>إجمالي</p>
+              <p style={S.statNum}>{employees.length}</p><p style={S.statLabel}>إجمالي</p>
             </div>
             <div style={{...S.statBox,borderTop:"3px solid #22c55e"}}>
               <p style={{...S.statNum,color:"#22c55e"}}>{todayPresent}</p><p style={S.statLabel}>حضروا</p>
@@ -838,12 +867,12 @@ function AdminPanel({onLogout}){
                   {icon:"🪪",label:"الرقم الوظيفي",val:selectedEmp.id},
                   {icon:"🏢",label:"القسم",val:selectedEmp.department},
                   {icon:"💼",label:"المنصب",val:selectedEmp.position},
-                  {icon:"📅",label:"أيام الحضور",val:`${getEmpData(selectedEmp.id).filter(r=>r.checkOut).length} يوم مكتمل`},
-                  {icon:"⏱",label:"إجمالي ساعات الدوام",val:`${getEmpData(selectedEmp.id).reduce((a,r)=>r.checkOut?a+((new Date(r.checkOut)-new Date(r.checkIn))/3600000):a,0).toFixed(1)} ساعة`},
-                  {icon:"⚠️",label:"أيام التأخير",val:`${getEmpData(selectedEmp.id).filter(r=>r.status==="late").length} يوم`},
-                  {icon:"💸",label:"إجمالي الخصومات",val:`${getEmpData(selectedEmp.id).reduce((a,r)=>a+(r.deduction||0),0).toLocaleString()} دينار`},
-                  {icon:"🟡",label:"زمنيات هذا الشهر",val:`${monthExcuses(selectedEmp.id)} / ${MONTHLY_LIMITS.excuses}`},
-                  {icon:"🌴",label:"إجازات هذا الشهر",val:`${monthLeaves(selectedEmp.id)} / ${MONTHLY_LIMITS.leaves}`},
+                  {icon:"📅",label:"أيام الحضور",val:`${allRecords.filter(r=>r.emp.id===selectedEmp.id&&r.checkOut).length} يوم مكتمل`},
+                  {icon:"⏱",label:"إجمالي ساعات الدوام",val:`${allRecords.filter(r=>r.emp.id===selectedEmp.id).reduce((a,r)=>r.checkOut?a+((new Date(r.checkOut)-new Date(r.checkIn))/3600000):a,0).toFixed(1)} ساعة`},
+                  {icon:"⚠️",label:"أيام التأخير",val:`${allRecords.filter(r=>r.emp.id===selectedEmp.id&&r.status==="late").length} يوم`},
+                  {icon:"💸",label:"إجمالي الخصومات",val:`${allRecords.filter(r=>r.emp.id===selectedEmp.id).reduce((a,r)=>a+(r.deduction||0),0).toLocaleString()} دينار`},
+                  {icon:"🟡",label:"زمنيات هذا الشهر",val:`${allRequests.filter(r=>r.empId===selectedEmp.id&&r.type==="excuse"&&r.monthKey===monthKey()).length} / ${MONTHLY_LIMITS.excuses}`},
+                  {icon:"🌴",label:"إجازات هذا الشهر",val:`${allRequests.filter(r=>r.empId===selectedEmp.id&&r.type==="leave"&&r.monthKey===monthKey()).length} / ${MONTHLY_LIMITS.leaves}`},
                 ].map(item=>(
                   <div key={item.label} style={{...S.infoRow,marginBottom:8}}>
                     <span style={{fontSize:20}}>{item.icon}</span>
@@ -855,9 +884,9 @@ function AdminPanel({onLogout}){
                 ))}
                 {/* سجل الحضور الخاص بهذا الموظف */}
                 <h3 style={{fontSize:14,fontWeight:700,color:"#0f172a",margin:"20px 0 10px"}}>📋 سجل حضوره</h3>
-                {getEmpData(selectedEmp.id).length===0
+                {allRecords.filter(r=>r.emp.id===selectedEmp.id).length===0
                   ?<div style={S.empty}><span style={{fontSize:40}}>📭</span><p style={{color:"#94a3b8",marginTop:8,fontSize:13}}>لا يوجد سجل بعد</p></div>
-                  :getEmpData(selectedEmp.id).slice().reverse().map((r,i)=>{
+                  :allRecords.filter(r=>r.emp.id===selectedEmp.id).slice().reverse().map((r,i)=>{
                     const dur=duration(r.checkIn,r.checkOut);
                     return(
                       <div key={i} style={{...S.recordCard,borderRight:`4px solid ${r.status==="late"?"#f59e0b":"#22c55e"}`,marginBottom:8}}>
@@ -882,8 +911,8 @@ function AdminPanel({onLogout}){
                 }
               </>
             ):(
-              EMPLOYEES.map(emp=>{
-                const empRecords=getEmpData(emp.id);
+              employees.map(emp=>{
+                const empRecords=allRecords.filter(r=>r.emp.id===emp.id);
                 const empDed=empRecords.reduce((a,r)=>a+(r.deduction||0),0);
                 const empHours=empRecords.reduce((a,r)=>r.checkOut?a+((new Date(r.checkOut)-new Date(r.checkIn))/3600000):a,0);
                 const isHereNow=empRecords.some(r=>new Date(r.checkIn).toDateString()===todayStr&&!r.checkOut);
@@ -1082,7 +1111,7 @@ function HomeScreen({employee,onLogout}){
     calc();
     const t=setInterval(calc,30000);
     return ()=>clearInterval(t);
-  },[isCheckedIn, employee.id]);
+  },[isCheckedIn]);
 
   return(
     <div style={S.appWrap}>
