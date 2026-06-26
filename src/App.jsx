@@ -3,7 +3,7 @@ import { useState, useEffect } from "react";
 // ══════════════════════════════════════════════════════════════
 //  ربط Google Sheets
 // ══════════════════════════════════════════════════════════════
-const GS_URL = "https://script.google.com/macros/s/AKfycbyY-t08HCe2cVAViZvrQJbo1yiXgnzESp9v6_g0CqTxb1fK4migbc2pnhEoK1nf7mWe/exec";
+const GS_URL = "https://script.google.com/macros/s/AKfycbyY-t08HCe2cVAViZvrQJbo1yiXgnzESp9v6_g0CqTxb1fK4migbc2pnhEoK1nf7mWe/exec?action=getAttendance";
 
 async function gsSaveAttendance(emp, record) {
   try {
@@ -576,7 +576,9 @@ function AdminPanel({onLogout}){
 
   async function loadAllData(){
     setDataLoading(true);
+    console.log("🔄 loadAllData started");
     const [recs,excs,emps]=await Promise.all([gsGetAttendance(),gsGetExcusesAll(),gsGetEmployees()]);
+    console.log("✅ recs:",recs.length,"excs:",excs.length,"emps:",emps.length);
     setAllRecords(recs.map(r=>({
       ...r,
       checkOut:r.checkOut||null,
@@ -590,6 +592,7 @@ function AdminPanel({onLogout}){
     })));
     setEmployees(emps);
     setDataLoading(false);
+    console.log("✅ loadAllData done");
   }
 
   useEffect(()=>{ loadAllData(); },[]);
