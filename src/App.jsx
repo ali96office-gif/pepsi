@@ -3,7 +3,7 @@ import { useState, useEffect } from "react";
 // ══════════════════════════════════════════════════════════════
 //  ربط Google Sheets
 // ══════════════════════════════════════════════════════════════
-const GS_URL = "https://script.google.com/macros/s/AKfycbwGTO7S5M04p6c_SQNUOo-CH9pfb4FnFcE3iEDCzENR-pK1nmnBO0y4b5gbPLe2oSG0/exec";
+const GS_URL = "https://script.google.com/macros/s/AKfycbxd-dJCSkOkgbeUw83dZAFW8WpI8DFdXDQNFHMDRJKYoXZNJCH75NAAuqgdHvm57to/exec";
 
 async function gsSaveAttendance(emp, record) {
   try {
