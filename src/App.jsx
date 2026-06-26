@@ -559,26 +559,49 @@ function LoginScreen({onLogin}){
 function AdminPanel({onLogout}){
   const [filter,setFilter]=useState("today");
   const [search,setSearch]=useState("");
-  const [tab,setTab]=useState("records"); // records | requests | deductions | employees
+  const [tab,setTab]=useState("records");
   const [deduction,setDeduction]=useState(()=>{
     try{return JSON.parse(localStorage.getItem("lateDeduction")||JSON.stringify(RULES.lateDeduction));}catch{return RULES.lateDeduction;}
   });
   const [deductionInput,setDeductionInput]=useState(String(deduction));
-  // فلتر التاريخ المخصص
-  const today=new Date(); 
+  const today=new Date();
   const todayISO=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
   const [dateFrom,setDateFrom]=useState(todayISO);
   const [dateTo,setDateTo]=useState(todayISO);
   const [selectedEmp,setSelectedEmp]=useState(null);
+  const [allRecords,setAllRecords]=useState([]);
+  const [allRequests,setAllRequests]=useState([]);
+  const [employees,setEmployees]=useState([]);
+  const [dataLoading,setDataLoading]=useState(true);
+
+  async function loadAllData(){
+    setDataLoading(true);
+    const [recs,excs,emps]=await Promise.all([gsGetAttendance(),gsGetExcusesAll(),gsGetEmployees()]);
+    setAllRecords(recs.map(r=>({
+      ...r,
+      checkOut:r.checkOut||null,
+      deduction:Number(r.deduction)||0,
+      emp:{id:r.empId,name:r.name,department:r.dept,position:r.position}
+    })));
+    setAllRequests(excs.map((ex,i)=>({
+      ...ex,
+      id:ex.date+"_"+ex.empId+"_"+i,
+      emp:{id:ex.empId,name:ex.name,department:"",position:""}
+    })));
+    setEmployees(emps);
+    setDataLoading(false);
+  }
+
+  useEffect(()=>{ loadAllData(); },[]);
 
   function saveDeduction(val){
     const n=Number(val);
     if(!isNaN(n)&&n>=0){ setDeduction(n); localStorage.setItem("lateDeduction",JSON.stringify(n)); }
   }
 
-  const allRecords=getAllRecords();
   const todayStr=new Date().toDateString();
   const filtered=allRecords.filter(r=>{
+    if(!r.checkIn) return false;
     if(filter==="today") return new Date(r.checkIn).toDateString()===todayStr;
     if(filter==="week"){ const d=new Date(); d.setDate(d.getDate()-7); return new Date(r.checkIn)>=d; }
     if(filter==="range"){
@@ -590,33 +613,23 @@ function AdminPanel({onLogout}){
     return true;
   }).filter(r=>r.emp.name.includes(search)||r.emp.id.includes(search)||r.emp.department.includes(search));
 
-  const todayPresent=new Set(allRecords.filter(r=>new Date(r.checkIn).toDateString()===todayStr).map(r=>r.emp.id)).size;
-  const checkedInNow=allRecords.filter(r=>new Date(r.checkIn).toDateString()===todayStr&&!r.checkOut).length;
-  const lateToday=allRecords.filter(r=>new Date(r.checkIn).toDateString()===todayStr&&r.status==="late").length;
-  const totalDeductions=allRecords.filter(r=>r.deduction).reduce((a,r)=>a+(r.deduction||0),0);
-
-  // كل الطلبات
-  const allRequests=[];
-  EMPLOYEES.forEach(emp=>{
-    getExcuses(emp.id).forEach(ex=>allRequests.push({...ex,emp}));
-  });
+  const todayPresent=new Set(allRecords.filter(r=>r.checkIn&&new Date(r.checkIn).toDateString()===todayStr).map(r=>r.emp.id)).size;
+  const checkedInNow=allRecords.filter(r=>r.checkIn&&new Date(r.checkIn).toDateString()===todayStr&&!r.checkOut).length;
+  const lateToday=allRecords.filter(r=>r.checkIn&&new Date(r.checkIn).toDateString()===todayStr&&r.status==="late").length;
+  const totalDeductions=allRecords.reduce((a,r)=>a+(r.deduction||0),0);
   const pendingReqs=allRequests.filter(r=>r.status==="pending");
 
-  function approveRequest(empId,id,approve){
-    const excuses=getExcuses(empId);
-    const req = excuses.find(e=>e.id===id);
-    const updated=excuses.map(e=>e.id===id?{...e,status:approve?"approved":"rejected",decisionDate:new Date().toISOString()}:e);
-    saveExcuses(empId,updated);
-    // تحديث الحالة في Google Sheets
-    if(req) gsUpdateExcuseStatus(empId, req.date, approve?"approved":"rejected");
-    // force re-render
-    setFilter(f=>f);
+  async function approveRequest(empId,id,approve){
+    const req=allRequests.find(e=>e.id===id);
+    if(req){
+      await gsUpdateExcuseStatus(empId, req.date, approve?"approved":"rejected");
+      setAllRequests(prev=>prev.map(e=>e.id===id?{...e,status:approve?"approved":"rejected",decisionDate:new Date().toISOString()}:e));
+    }
   }
 
   if(dataLoading) return(
     <div style={{...S.appWrap,justifyContent:"center",alignItems:"center",display:"flex",flexDirection:"column",gap:16}}>
-      <div style={{width:48,height:48,border:"4px solid #e2e8f0",borderTop:"4px solid #6366f1",borderRadius:"50%",animation:"spin 1s linear infinite"}}/>
-      <p style={{color:"#64748b",fontSize:14,fontWeight:600}}>جارٍ تحميل البيانات...</p>
+      <p style={{color:"#64748b",fontSize:14,fontWeight:600}}>⏳ جارٍ تحميل البيانات...</p>
     </div>
   );
 
