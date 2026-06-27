@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 // ══════════════════════════════════════════════════════════════
 //  ربط Google Sheets
@@ -977,16 +977,16 @@ function HomeScreen({employee,onLogout}){
   const [sheetExcuses,setSheetExcuses]=useState(null); // أحدث حالة الطلبات من Google Sheets
 
   // جلب أحدث حالة الطلبات (الموافقة/الرفض) من Google Sheets دائماً
-  function refreshMyRequests(){
+  const refreshMyRequests=useCallback(()=>{
     gsGetExcusesAll().then(all=>{
       setSheetExcuses(all.filter(e=>String(e.empId).trim()===String(employee.id).trim()));
     }).catch(()=>{});
-  }
+  },[employee.id]);
   useEffect(()=>{
     refreshMyRequests();
     const t=setInterval(refreshMyRequests,15000); // تحديث تلقائي كل 15 ثانية
     return ()=>clearInterval(t);
-  },[employee.id]);
+  },[refreshMyRequests]);
 
   // قراءة مبلغ الخصم الحالي
   function currentDeduction(){ try{ return JSON.parse(localStorage.getItem("lateDeduction")||JSON.stringify(RULES.lateDeduction)); }catch{ return RULES.lateDeduction; } }
