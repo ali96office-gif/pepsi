@@ -165,7 +165,7 @@ function fmtDate(iso){ return new Date(iso).toLocaleDateString("ar-SA",{weekday:
 function fmtDateShort(iso){ return new Date(iso).toLocaleDateString("ar-SA",{year:"numeric",month:"2-digit",day:"2-digit"}); }
 function dayName(iso){ return new Date(iso).toLocaleDateString("ar-SA",{weekday:"long"}); }
 function duration(inIso,outIso){ if(!outIso) return null; return ((new Date(outIso)-new Date(inIso))/3600000).toFixed(1); }
-function monthKey(){ const n=new Date(); return `${n.getFullYear()}-${n.getMonth()}`; }
+function monthKey(d){ const n=d?new Date(d):new Date(); return `${n.getFullYear()}-${n.getMonth()}`; }
 
 function getEmpData(empId){ try{ return JSON.parse(localStorage.getItem(`att_${empId}`)||"[]"); }catch{ return []; } }
 function saveEmpData(empId,data){ localStorage.setItem(`att_${empId}`,JSON.stringify(data)); }
@@ -564,6 +564,7 @@ function AdminPanel({onLogout}){
   const [allRequests,setAllRequests]=useState([]);
   const [employees,setEmployees]=useState([]);
   const [dataLoading,setDataLoading]=useState(true);
+  const [salaryMonth,setSalaryMonth]=useState(monthKey());
 
   async function loadAllData(){
     setDataLoading(true);
@@ -634,7 +635,7 @@ function AdminPanel({onLogout}){
 
       {/* Tabs */}
       <div style={{display:"flex",borderBottom:"1px solid #e2e8f0",background:"#fff",flexShrink:0,overflowX:"auto"}}>
-        {[["records","السجلات"],["requests","الطلبات"+(pendingReqs.length?` (${pendingReqs.length})`:"")],["deductions","الخصومات"],["employees","الموظفون"]].map(([k,l])=>(
+        {[["records","السجلات"],["requests","الطلبات"+(pendingReqs.length?` (${pendingReqs.length})`:"")],["deductions","الخصومات"],["salaries","الرواتب"],["employees","الموظفون"]].map(([k,l])=>(
           <button key={k} onClick={()=>setTab(k)}
             style={{flex:1,padding:"11px 4px",border:"none",cursor:"pointer",fontSize:12,fontWeight:700,
               background:"none",color:tab===k?"#6366f1":"#94a3b8",
@@ -848,6 +849,72 @@ function AdminPanel({onLogout}){
             }
           </div>
         )}
+
+        {/* ── الرواتب ── */}
+        {tab==="salaries"&&(()=>{
+          const [y,m]=salaryMonth.split("-").map(Number);
+          const monthLabel=new Date(y,m,1).toLocaleDateString("ar-SA",{year:"numeric",month:"long"});
+          const rows=employees.map(emp=>{
+            const empDed=allRecords
+              .filter(r=>r.emp.id===emp.id && monthKey(r.checkIn)===salaryMonth)
+              .reduce((a,r)=>a+(r.deduction||0),0);
+            const base=Number(emp.salary)||0;
+            return {emp, base, deduction:empDed, net:base-empDed};
+          });
+          const totalBase=rows.reduce((a,r)=>a+r.base,0);
+          const totalDed=rows.reduce((a,r)=>a+r.deduction,0);
+          const totalNet=rows.reduce((a,r)=>a+r.net,0);
+          function shiftMonth(delta){
+            const d=new Date(y,m+delta,1);
+            setSalaryMonth(`${d.getFullYear()}-${d.getMonth()}`);
+          }
+          return(
+            <div style={{padding:"16px 16px 90px"}}>
+              <h2 style={{...S.sectionTitle,paddingTop:0}}>الرواتب</h2>
+
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:"#fff",borderRadius:14,border:"1px solid #e2e8f0",padding:"10px 14px",marginBottom:16}}>
+                <button onClick={()=>shiftMonth(-1)} style={{background:"#f1f5f9",border:"none",borderRadius:10,width:34,height:34,fontSize:16,fontWeight:700,cursor:"pointer",color:"#475569"}}>›</button>
+                <p style={{margin:0,fontSize:15,fontWeight:800,color:"#0f172a"}}>{monthLabel}</p>
+                <button onClick={()=>shiftMonth(1)} style={{background:"#f1f5f9",border:"none",borderRadius:10,width:34,height:34,fontSize:16,fontWeight:700,cursor:"pointer",color:"#475569"}}>‹</button>
+              </div>
+
+              <div style={{...S.statsRow}}>
+                <div style={{...S.statBox,borderTop:"3px solid #6366f1"}}>
+                  <p style={{...S.statNum,fontSize:16}}>{totalBase.toLocaleString()}</p><p style={S.statLabel}>إجمالي الرواتب</p>
+                </div>
+                <div style={{...S.statBox,borderTop:"3px solid #ef4444"}}>
+                  <p style={{...S.statNum,fontSize:16,color:"#ef4444"}}>{totalDed.toLocaleString()}</p><p style={S.statLabel}>الخصومات</p>
+                </div>
+                <div style={{...S.statBox,borderTop:"3px solid #22c55e"}}>
+                  <p style={{...S.statNum,fontSize:16,color:"#22c55e"}}>{totalNet.toLocaleString()}</p><p style={S.statLabel}>الصافي</p>
+                </div>
+              </div>
+
+              <h3 style={{fontSize:15,fontWeight:700,color:"#0f172a",margin:"20px 0 12px"}}>تفصيل كل موظف</h3>
+              {rows.length===0
+                ?<div style={S.empty}><span style={{fontSize:48}}>💰</span><p style={{color:"#94a3b8",marginTop:12}}>لا يوجد موظفون</p></div>
+                :rows.map(({emp,base,deduction,net})=>(
+                  <div key={emp.id} style={{...S.recordCard,borderRight:"4px solid #6366f1",marginBottom:10}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                      <div>
+                        <p style={{margin:0,fontWeight:700,fontSize:14}}>{emp.name}</p>
+                        <p style={{margin:0,fontSize:11,color:"#64748b"}}>{emp.position} · {emp.id}</p>
+                      </div>
+                      <p style={{margin:0,fontSize:20,fontWeight:800,color:"#22c55e"}}>{net.toLocaleString()}</p>
+                    </div>
+                    <div style={{display:"flex",gap:14,fontSize:12,color:"#64748b"}}>
+                      <span>الأساسي: <b style={{color:"#0f172a"}}>{base.toLocaleString()}</b></span>
+                      {deduction>0&&<span style={{color:"#dc2626"}}>الخصم: <b>−{deduction.toLocaleString()}</b></span>}
+                    </div>
+                  </div>
+                ))
+              }
+              <p style={{fontSize:11,color:"#94a3b8",textAlign:"center",marginTop:16}}>
+                💡 الراتب الأساسي يُحدَّث من شيت Employees (عمود الراتب)
+              </p>
+            </div>
+          );
+        })()}
 
         {/* ── الموظفون ── */}
         {tab==="employees"&&(
