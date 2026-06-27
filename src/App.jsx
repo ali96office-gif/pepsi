@@ -132,7 +132,7 @@ const RULES = {
 const MONTHLY_LIMITS = { excuses: 2, leaves: 1 };
 
 // إعدادات التحقق من الوجه
-const FACE_MODEL_URL = "https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js-models@master";
+const FACE_MODEL_URL = "https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights";
 const FACE_MATCH_THRESHOLD = 0.5; // كل ما قلّت القيمة، زادت الدقة المطلوبة للمطابقة
 
 // ══════════════════════════════════════════════════════════════
@@ -150,9 +150,9 @@ let faceModelsPromise=null;
 function loadFaceModels(){
   if(!faceModelsPromise){
     faceModelsPromise=Promise.all([
-      faceapi.nets.tinyFaceDetector.loadFromUri(FACE_MODEL_URL+"/weights"),
-      faceapi.nets.faceLandmark68Net.loadFromUri(FACE_MODEL_URL+"/weights"),
-      faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODEL_URL+"/weights"),
+      faceapi.nets.tinyFaceDetector.loadFromUri(FACE_MODEL_URL),
+      faceapi.nets.faceLandmark68Net.loadFromUri(FACE_MODEL_URL),
+      faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODEL_URL),
     ]);
   }
   return faceModelsPromise;
