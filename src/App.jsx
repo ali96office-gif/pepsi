@@ -203,14 +203,6 @@ function monthLeaves(empId){
   return getExcuses(empId).filter(e => e.monthKey === mk && e.type === "leave" && e.status !== "rejected").length;
 }
 
-function getAllRecords(){
-  const all=[];
-  EMPLOYEES.forEach(emp=>{
-    getEmpData(emp.id).forEach(r=>all.push({...r,emp}));
-  });
-  return all.sort((a,b)=>new Date(b.checkIn)-new Date(a.checkIn));
-}
-
 function exportCSV(records){
   const header="الرقم الوظيفي,الاسم,القسم,المنصب,اليوم,التاريخ,وقت الحضور,حالة الحضور,وقت الانصراف,مدة الدوام,خصم التأخير\n";
   const rows=records.map(r=>{
@@ -576,9 +568,7 @@ function AdminPanel({onLogout}){
 
   async function loadAllData(){
     setDataLoading(true);
-    console.log("🔄 loadAllData started");
     const [recs,excs,emps]=await Promise.all([gsGetAttendance(),gsGetExcusesAll(),gsGetEmployees()]);
-    console.log("✅ recs:",recs.length,"excs:",excs.length,"emps:",emps.length);
     setAllRecords(recs.map(r=>({
       ...r,
       checkOut:r.checkOut||null,
@@ -592,7 +582,6 @@ function AdminPanel({onLogout}){
     })));
     setEmployees(emps);
     setDataLoading(false);
-    console.log("✅ loadAllData done");
   }
 
   useEffect(()=>{ loadAllData(); },[]);
@@ -1127,7 +1116,7 @@ function HomeScreen({employee,onLogout}){
     calc();
     const t=setInterval(calc,30000);
     return ()=>clearInterval(t);
-  },[isCheckedIn]);
+  },[isCheckedIn, employee.id]);
 
   return(
     <div style={S.appWrap}>
