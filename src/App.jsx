@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import * as faceapi from "face-api.js";
 
 // ══════════════════════════════════════════════════════════════
 //  ربط Google Sheets
@@ -64,6 +65,17 @@ async function gsUpdateExcuseStatus(empId, excuseDate, status) {
   } catch (e) { console.warn("GS update status failed", e); }
 }
 
+async function gsSaveFaceDescriptor(empId, descriptor) {
+  try {
+    await fetch(GS_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "saveFaceDescriptor", empId, descriptor }),
+    });
+  } catch (e) { console.warn("GS save face descriptor failed", e); }
+}
+
 function gsGetEmployees() {
   return new Promise(async (resolve) => {
     try {
@@ -119,8 +131,9 @@ const RULES = {
 // الحدود الشهرية
 const MONTHLY_LIMITS = { excuses: 2, leaves: 1 };
 
-// الموظفون يُجلبون من Google Sheets ديناميكياً عند تسجيل الدخول
-const ADMIN = { id:"ADMIN", name:"المدير العام", pin:"0000", isAdmin:true };
+// إعدادات التحقق من الوجه
+const FACE_MODEL_URL = "https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js-models@master";
+const FACE_MATCH_THRESHOLD = 0.5; // كل ما قلّت القيمة، زادت الدقة المطلوبة للمطابقة
 
 // ══════════════════════════════════════════════════════════════
 //  أدوات مساعدة
@@ -130,6 +143,27 @@ function getDistance(lat1,lng1,lat2,lng2) {
   const Δφ=((lat2-lat1)*Math.PI)/180, Δλ=((lng2-lng1)*Math.PI)/180;
   const a=Math.sin(Δφ/2)**2+Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+// تحميل نماذج التعرف على الوجه مرة واحدة فقط لكل الجلسة
+let faceModelsPromise=null;
+function loadFaceModels(){
+  if(!faceModelsPromise){
+    faceModelsPromise=Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri(FACE_MODEL_URL+"/weights"),
+      faceapi.nets.faceLandmark68Net.loadFromUri(FACE_MODEL_URL+"/weights"),
+      faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODEL_URL+"/weights"),
+    ]);
+  }
+  return faceModelsPromise;
+}
+
+// حساب درجة التشابه بين بصمتين (المسافة الإقليدية بين متجهي 128 رقم)
+function faceDistance(d1,d2){
+  if(!d1||!d2||d1.length!==d2.length) return Infinity;
+  let sum=0;
+  for(let i=0;i<d1.length;i++) sum+=(d1[i]-d2[i])**2;
+  return Math.sqrt(sum);
 }
 
 function toMin(h,m){ return h*60+m; }
@@ -277,8 +311,135 @@ function CheckoutModal({employee,checkInTime,onConfirm,onCancel}){
 }
 
 // ══════════════════════════════════════════════════════════════
-//  نافذة طلب زمنية / إجازة
+//  نافذة التحقق من الوجه / تسجيل الوجه
 // ══════════════════════════════════════════════════════════════
+function FaceCaptureModal({mode,acceptedDescriptors,onDone,onCancel}){
+  // mode: "enroll" يسجل وجه جديد | "verify" يطابق مع أي بصمة من acceptedDescriptors
+  const videoRef=useRef(null);
+  const streamRef=useRef(null);
+  const [status,setStatus]=useState("loading"); // loading | ready | scanning | success | fail | error
+  const [message,setMessage]=useState("جارٍ تحميل نظام التعرف على الوجه...");
+  const [attempts,setAttempts]=useState(0);
+
+  useEffect(()=>{
+    let cancelled=false;
+    async function start(){
+      try{
+        await loadFaceModels();
+        const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});
+        if(cancelled){ stream.getTracks().forEach(t=>t.stop()); return; }
+        streamRef.current=stream;
+        if(videoRef.current){ videoRef.current.srcObject=stream; }
+        setStatus("ready");
+        setMessage(mode==="enroll"?"ضع وجهك وسط الإطار واضغط تسجيل":"ضع وجهك وسط الإطار للتحقق");
+      }catch(e){
+        if(!cancelled){ setStatus("error"); setMessage("تعذّر تشغيل الكاميرا — تأكد من السماح بالوصول إليها"); }
+      }
+    }
+    start();
+    return ()=>{
+      cancelled=true;
+      if(streamRef.current) streamRef.current.getTracks().forEach(t=>t.stop());
+    };
+  },[mode]);
+
+  function stopCamera(){
+    if(streamRef.current) streamRef.current.getTracks().forEach(t=>t.stop());
+  }
+
+  async function capture(){
+    if(status!=="ready" && status!=="fail") return;
+    setStatus("scanning"); setMessage("جارٍ تحليل الوجه...");
+    try{
+      const detection=await faceapi
+        .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+      if(!detection){
+        setStatus("fail"); setMessage("لم يتم العثور على وجه — حاول مرة أخرى بإضاءة أفضل");
+        setAttempts(a=>a+1);
+        return;
+      }
+      const descriptor=Array.from(detection.descriptor);
+      if(mode==="enroll"){
+        stopCamera();
+        setStatus("success"); setMessage("تم تسجيل الوجه بنجاح ✓");
+        setTimeout(()=>onDone(descriptor),900);
+      } else {
+        const matched=(acceptedDescriptors||[]).some(saved=>faceDistance(descriptor,saved)<=FACE_MATCH_THRESHOLD);
+        if(matched){
+          stopCamera();
+          setStatus("success"); setMessage("تم التحقق من الهوية ✓");
+          setTimeout(()=>onDone(true),700);
+        } else {
+          setStatus("fail"); setMessage("الوجه غير مطابق — حاول مرة أخرى");
+          setAttempts(a=>a+1);
+        }
+      }
+    }catch(e){
+      setStatus("fail"); setMessage("حدث خطأ بالتحليل — حاول مرة أخرى");
+      setAttempts(a=>a+1);
+    }
+  }
+
+  function cancel(){ stopCamera(); onCancel(); }
+
+  return(
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.handle}/>
+        <h2 style={M.title}>{mode==="enroll"?"تسجيل بصمة الوجه":"التحقق من الهوية"}</h2>
+        <p style={M.sub}>{message}</p>
+
+        <div style={{
+          position:"relative",width:"100%",aspectRatio:"3/4",maxHeight:340,
+          background:"#0f172a",borderRadius:20,overflow:"hidden",marginBottom:18,
+          border:`3px solid ${status==="success"?"#22c55e":status==="fail"||status==="error"?"#ef4444":"#6366f1"}`,
+        }}>
+          <video ref={videoRef} autoPlay playsInline muted
+            style={{width:"100%",height:"100%",objectFit:"cover",transform:"scaleX(-1)"}}/>
+          {status==="loading"&&(
+            <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(15,23,42,0.85)"}}>
+              <span style={{fontSize:36}}>⏳</span>
+            </div>
+          )}
+          {status==="scanning"&&(
+            <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(99,102,241,0.25)"}}>
+              <span style={{fontSize:36}}>🔍</span>
+            </div>
+          )}
+          {status==="success"&&(
+            <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(34,197,94,0.25)"}}>
+              <span style={{fontSize:48}}>✅</span>
+            </div>
+          )}
+          {status==="error"&&(
+            <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(15,23,42,0.9)"}}>
+              <span style={{fontSize:36}}>🚫</span>
+            </div>
+          )}
+        </div>
+
+        {attempts>=3&&mode==="verify"&&(
+          <p style={{textAlign:"center",fontSize:12,color:"#f59e0b",marginBottom:12}}>
+            ⚠️ عدة محاولات فاشلة — تأكد أنك نفس الشخص المسجَّل أو راجع المدير
+          </p>
+        )}
+
+        <div style={M.btnRow}>
+          <button style={M.cancelBtn} onClick={cancel}>إلغاء</button>
+          <button
+            style={{...M.confirmBtn,background:"linear-gradient(135deg,#6366f1,#4338ca)",boxShadow:"0 4px 14px rgba(99,102,241,0.35)",opacity:(status==="ready"||status==="fail")?1:0.6}}
+            onClick={capture}
+            disabled={status!=="ready"&&status!=="fail"}>
+            {status==="scanning"?"جارٍ التحليل...":mode==="enroll"?"تسجيل الوجه":"تحقق الآن"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ExcuseModal({employee,onClose}){
   const [type,setType]=useState("excuse"); // excuse | leave
   const [excuseKind,setExcuseKind]=useState("late"); // late (تأخير دخول) | early (خروج مبكر)
@@ -486,17 +647,12 @@ function LoginScreen({onLogin}){
     setError(""); setLoading(true);
     setTimeout(()=>{
       const id = empId.trim();
-      // تحقق من المدير الثابت
-      if(id===ADMIN.id && pin===ADMIN.pin){ onLogin(ADMIN); setLoading(false); return; }
-      // تحقق من الموظفين من Sheets
       const emp = employees.find(e =>
         String(e.id).trim().toLowerCase() === id.toLowerCase() &&
         String(e.pin).trim() === pin.trim()
       );
       if(emp){
-        // إذا كان عمود الصلاحية = "مدير" يدخل كمدير
-        if(emp.isAdmin) onLogin({...emp, isAdmin:true});
-        else onLogin({...emp, isAdmin:false});
+        onLogin(emp.isAdmin ? {...emp, isAdmin:true} : {...emp, isAdmin:false});
       } else {
         setError("رقم المستخدم أو كلمة المرور غير صحيحة");
       }
@@ -535,10 +691,6 @@ function LoginScreen({onLogin}){
           onClick={handleLogin} disabled={loading||gsStatus==="loading"}>
           {loading?"جارٍ التحقق...":"دخول"}
         </button>
-        <div style={S.demoHint}>
-          <p style={{margin:0,fontSize:11,color:"#94a3b8",fontWeight:600,marginBottom:4}}>المدير:</p>
-          <p style={{margin:0,fontSize:11,color:"#a78bfa"}}>ADMIN / 0000</p>
-        </div>
       </div>
     </div>
   );
@@ -547,7 +699,7 @@ function LoginScreen({onLogin}){
 // ══════════════════════════════════════════════════════════════
 //  لوحة المدير
 // ══════════════════════════════════════════════════════════════
-function AdminPanel({onLogout}){
+function AdminPanel({employee,onLogout}){
   const [filter,setFilter]=useState("today");
   const [search,setSearch]=useState("");
   const [tab,setTab]=useState("records");
@@ -565,6 +717,8 @@ function AdminPanel({onLogout}){
   const [employees,setEmployees]=useState([]);
   const [dataLoading,setDataLoading]=useState(true);
   const [salaryMonth,setSalaryMonth]=useState(monthKey());
+  const [showFaceEnroll,setShowFaceEnroll]=useState(false);
+  const [hasFace,setHasFace]=useState(!!employee.faceDescriptor);
 
   async function loadAllData(){
     setDataLoading(true);
@@ -630,8 +784,35 @@ function AdminPanel({onLogout}){
       <div style={{...S.header,background:"linear-gradient(135deg,#1e1b4b,#4c1d95)"}}>
         <button style={S.logoutBtn} onClick={onLogout}>خروج</button>
         <span style={S.headerTitle}>🛡️ لوحة المدير</span>
-        <button onClick={loadAllData} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,color:"#fff",fontSize:12,fontWeight:700,padding:"6px 12px",cursor:"pointer"}}>🔄</button>
+        <div style={{display:"flex",gap:6}}>
+          <button onClick={()=>setShowFaceEnroll(true)} title="تسجيل/تحديث بصمة الوجه"
+            style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,color:"#fff",fontSize:14,fontWeight:700,padding:"6px 10px",cursor:"pointer"}}>
+            {hasFace?"🟢":"📷"}
+          </button>
+          <button onClick={loadAllData} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,color:"#fff",fontSize:12,fontWeight:700,padding:"6px 12px",cursor:"pointer"}}>🔄</button>
+        </div>
       </div>
+      {!hasFace&&(
+        <div style={{background:"#fef9c3",borderBottom:"1px solid #fde047",padding:"8px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+          <p style={{margin:0,fontSize:12,color:"#854d0e",fontWeight:600}}>📷 سجّل بصمة وجهك لتفعيل التحقق الأمني</p>
+          <button onClick={()=>setShowFaceEnroll(true)} style={{background:"#facc15",border:"none",borderRadius:8,padding:"5px 12px",fontSize:11,fontWeight:700,color:"#713f12",cursor:"pointer"}}>تسجيل الآن</button>
+        </div>
+      )}
+      {showFaceEnroll&&(
+        <FaceCaptureModal
+          mode="enroll"
+          onDone={(descriptor)=>{
+            const json=JSON.stringify(descriptor);
+            const updated={...employee, faceDescriptor:json};
+            Object.assign(employee, updated);
+            try{ localStorage.setItem("currentUser",JSON.stringify(updated)); }catch{}
+            gsSaveFaceDescriptor(employee.id, json);
+            setHasFace(true);
+            setShowFaceEnroll(false);
+          }}
+          onCancel={()=>setShowFaceEnroll(false)}
+        />
+      )}
 
       {/* Tabs */}
       <div style={{display:"flex",borderBottom:"1px solid #e2e8f0",background:"#fff",flexShrink:0,overflowX:"auto"}}>
@@ -1043,6 +1224,16 @@ function HomeScreen({employee,onLogout}){
   const [,forceUpdate]=useState(0);
   const [sheetExcuses,setSheetExcuses]=useState(null); // أحدث حالة الطلبات من Google Sheets
   const attendanceLock=useRef(false); // قفل يمنع تسجيل حضور/انصراف مكرر عند الضغط المتكرر السريع
+  const [showFaceEnroll,setShowFaceEnroll]=useState(false);
+  const [hasFace,setHasFace]=useState(!!employee.faceDescriptor);
+  const [adminFaces,setAdminFaces]=useState([]); // بصمات وجوه المديرين (تُقبل بديلاً عن وجه الموظف)
+  const [showFaceVerify,setShowFaceVerify]=useState(false); // تحقق الوجه قبل تسجيل الحضور/الانصراف
+
+  useEffect(()=>{
+    gsGetEmployees().then(list=>{
+      setAdminFaces(list.filter(e=>e.isAdmin&&e.faceDescriptor).map(e=>JSON.parse(e.faceDescriptor)));
+    }).catch(()=>{});
+  },[]);
 
   // جلب أحدث حالة الطلبات (الموافقة/الرفض) من Google Sheets دائماً
   const refreshMyRequests=useCallback(()=>{
@@ -1073,6 +1264,27 @@ function HomeScreen({employee,onLogout}){
   const myRequests=(sheetExcuses!==null?sheetExcuses:getExcuses(employee.id)).sort((a,b)=>b.id-a.id);
 
   function save(updated){ setRecords(updated); saveEmpData(employee.id,updated); }
+
+  function startAttendance(){
+    if(attendanceLock.current) return; // يمنع الضغط المتكرر السريع
+    // التحقق من إمكانية التسجيل (نفس الوقت يُفحص هنا أيضاً تجنباً لفتح الكاميرا بلا فائدة)
+    if(!isCheckedIn&&!canCheckIn()){
+      setGpsState("error");
+      setGpsMsg("وقت تسجيل الحضور من 12:00 ص إلى 11:59 ص فقط");
+      return;
+    }
+    if(isCheckedIn&&!canCheckOut()){
+      setGpsState("error");
+      setGpsMsg("وقت تسجيل الانصراف من 12:00 م إلى 11:59 م فقط");
+      return;
+    }
+    // إذا لا يوجد أي بصمة وجه مسجّلة (لا للموظف ولا لأي مدير)، نتجاوز التحقق لتجنّب تعطيل التسجيل
+    if(!employee.faceDescriptor && adminFaces.length===0){
+      handleAttendance();
+      return;
+    }
+    setShowFaceVerify(true);
+  }
 
   function handleAttendance(){
     if(attendanceLock.current) return; // يمنع الضغط المتكرر السريع
@@ -1213,6 +1425,32 @@ function HomeScreen({employee,onLogout}){
       {showExcuse&&(
         <ExcuseModal employee={employee} onClose={()=>{setShowExcuse(false);forceUpdate(n=>n+1);refreshMyRequests();}}/>
       )}
+      {showFaceVerify&&(
+        <FaceCaptureModal
+          mode="verify"
+          acceptedDescriptors={[
+            ...(employee.faceDescriptor?[JSON.parse(employee.faceDescriptor)]:[]),
+            ...adminFaces,
+          ]}
+          onDone={()=>{ setShowFaceVerify(false); handleAttendance(); }}
+          onCancel={()=>setShowFaceVerify(false)}
+        />
+      )}
+      {showFaceEnroll&&(
+        <FaceCaptureModal
+          mode="enroll"
+          onDone={(descriptor)=>{
+            const json=JSON.stringify(descriptor);
+            const updated={...employee, faceDescriptor:json};
+            Object.assign(employee, updated); // تحديث فوري للنسخة الحالية بالجلسة
+            try{ localStorage.setItem("currentUser",JSON.stringify(updated)); }catch{}
+            gsSaveFaceDescriptor(employee.id, json);
+            setHasFace(true);
+            setShowFaceEnroll(false);
+          }}
+          onCancel={()=>setShowFaceEnroll(false)}
+        />
+      )}
 
       <div style={S.header}>
         <button style={S.logoutBtn} onClick={onLogout}>خروج</button>
@@ -1306,7 +1544,7 @@ function HomeScreen({employee,onLogout}){
             style={{...S.bigBtn,background:isCheckedIn
               ?"linear-gradient(135deg,#ef4444,#b91c1c)"
               :"linear-gradient(135deg,#22c55e,#15803d)"}}
-            onClick={handleAttendance}>
+            onClick={startAttendance}>
             <span style={{fontSize:48}}>{isCheckedIn?"👋":"👆"}</span>
             <span style={S.bigBtnLabel}>{isCheckedIn?"تسجيل الانصراف":"تسجيل الحضور"}</span>
             <span style={S.bigBtnSub}>
@@ -1495,6 +1733,22 @@ function HomeScreen({employee,onLogout}){
                 </div>
               </div>
             ))}
+            <div style={{background:hasFace?"linear-gradient(135deg,#dcfce7,#bbf7d0)":"linear-gradient(135deg,#fef9c3,#fef08a)",borderRadius:14,padding:16,marginTop:12,border:`1px solid ${hasFace?"#86efac":"#fde047"}`}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:hasFace?0:10}}>
+                <div>
+                  <p style={{margin:"0 0 2px",fontWeight:700,color:hasFace?"#166534":"#854d0e",fontSize:14}}>
+                    {hasFace?"✅ بصمة الوجه مسجَّلة":"📷 بصمة الوجه غير مسجَّلة"}
+                  </p>
+                  <p style={{margin:0,fontSize:11,color:hasFace?"#15803d":"#92400e"}}>
+                    {hasFace?"تُستخدم للتحقق من هويتك عند تسجيل الحضور والانصراف":"سجّلها الآن لتفعيل التحقق عند تسجيل الحضور والانصراف"}
+                  </p>
+                </div>
+              </div>
+              <button onClick={()=>setShowFaceEnroll(true)}
+                style={{width:"100%",marginTop:10,background:hasFace?"#fff":"#facc15",border:hasFace?"1px solid #86efac":"none",borderRadius:10,padding:"10px 0",fontSize:13,fontWeight:700,color:hasFace?"#166534":"#713f12",cursor:"pointer"}}>
+                {hasFace?"إعادة تسجيل الوجه":"تسجيل الوجه الآن"}
+              </button>
+            </div>
             <div style={{background:"linear-gradient(135deg,#ede9fe,#ddd6fe)",borderRadius:14,padding:16,marginTop:12,border:"1px solid #c4b5fd"}}>
               <p style={{margin:"0 0 6px",fontWeight:700,color:"#5b21b6",fontSize:14}}>📲 تثبيت التطبيق</p>
               <p style={{margin:0,fontSize:12,color:"#6d28d9",lineHeight:1.6}}>
@@ -1526,6 +1780,7 @@ export default function App(){
   const [user,setUser]=useState(()=>{
     try{ return JSON.parse(localStorage.getItem("currentUser")||"null"); }catch{ return null; }
   });
+  const [adminVerified,setAdminVerified]=useState(false); // يُطلب من جديد بكل تحميل/تحديث للصفحة، وليس مخزَّناً بشكل دائم
 
   function handleLogin(u){
     try{ localStorage.setItem("currentUser",JSON.stringify(u)); }catch{}
@@ -1534,10 +1789,29 @@ export default function App(){
   function handleLogout(){
     try{ localStorage.removeItem("currentUser"); }catch{}
     setUser(null);
+    setAdminVerified(false);
   }
 
   if(!user) return <LoginScreen onLogin={handleLogin}/>;
-  if(user.isAdmin) return <AdminPanel onLogout={handleLogout}/>;
+
+  if(user.isAdmin){
+    if(!user.faceDescriptor){
+      // لا يمكن فرض التحقق على مدير لم يسجّل وجهه بعد — يدخل مباشرة، ويُفضَّل تسجيل وجهه من لوحته
+      return <AdminPanel employee={user} onLogout={handleLogout}/>;
+    }
+    if(!adminVerified){
+      return (
+        <FaceCaptureModal
+          mode="verify"
+          acceptedDescriptors={[JSON.parse(user.faceDescriptor)]}
+          onDone={()=>setAdminVerified(true)}
+          onCancel={handleLogout}
+        />
+      );
+    }
+    return <AdminPanel employee={user} onLogout={handleLogout}/>;
+  }
+
   return <HomeScreen employee={user} onLogout={handleLogout}/>;
 }
 
