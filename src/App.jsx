@@ -313,6 +313,44 @@ function CheckoutModal({employee,checkInTime,onConfirm,onCancel}){
 // ══════════════════════════════════════════════════════════════
 //  نافذة التحقق من الوجه / تسجيل الوجه
 // ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+//  نافذة إدخال رمز إعادة تسجيل الوجه
+// ══════════════════════════════════════════════════════════════
+function FaceResetCodeModal({correctCode,onSuccess,onCancel}){
+  const [code,setCode]=useState("");
+  const [error,setError]=useState("");
+
+  function submit(){
+    if(code.trim()===String(correctCode||"").trim() && code.trim()!==""){
+      onSuccess();
+    } else {
+      setError("الرمز غير صحيح — راجع المدير للحصول على الرمز الصحيح");
+    }
+  }
+
+  return(
+    <div style={M.overlay}>
+      <div style={M.sheet}>
+        <div style={M.handle}/>
+        <h2 style={M.title}>رمز إعادة تسجيل الوجه</h2>
+        <p style={M.sub}>هذي العملية تستبدل بصمة الوجه المسجَّلة حالياً — أدخل الرمز المعتمد من المدير للاستمرار</p>
+        <input
+          type="password" placeholder="أدخل الرمز" value={code}
+          onChange={e=>{setCode(e.target.value);setError("");}} onKeyDown={e=>e.key==="Enter"&&submit()}
+          style={{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:12,padding:"12px 16px",color:"#0f172a",fontSize:15,outline:"none",textAlign:"right",direction:"rtl",width:"100%",boxSizing:"border-box",marginBottom:12}}
+        />
+        {error&&<p style={{color:"#dc2626",fontSize:13,textAlign:"center",margin:"0 0 12px"}}>{error}</p>}
+        <div style={M.btnRow}>
+          <button style={M.cancelBtn} onClick={onCancel}>إلغاء</button>
+          <button style={{...M.confirmBtn,background:"linear-gradient(135deg,#6366f1,#4338ca)",boxShadow:"0 4px 14px rgba(99,102,241,0.35)"}} onClick={submit}>
+            تأكيد
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function FaceCaptureModal({mode,acceptedDescriptors,onDone,onCancel}){
   // mode: "enroll" يسجل وجه جديد | "verify" يطابق مع أي بصمة من acceptedDescriptors
   const videoRef=useRef(null);
@@ -718,6 +756,7 @@ function AdminPanel({employee,onLogout}){
   const [dataLoading,setDataLoading]=useState(true);
   const [salaryMonth,setSalaryMonth]=useState(monthKey());
   const [showFaceEnroll,setShowFaceEnroll]=useState(false);
+  const [showFaceResetCode,setShowFaceResetCode]=useState(false);
   const [hasFace,setHasFace]=useState(!!employee.faceDescriptor);
 
   async function loadAllData(){
@@ -785,7 +824,7 @@ function AdminPanel({employee,onLogout}){
         <button style={S.logoutBtn} onClick={onLogout}>خروج</button>
         <span style={S.headerTitle}>🛡️ لوحة المدير</span>
         <div style={{display:"flex",gap:6}}>
-          <button onClick={()=>setShowFaceEnroll(true)} title="تسجيل/تحديث بصمة الوجه"
+          <button onClick={()=>hasFace?setShowFaceResetCode(true):setShowFaceEnroll(true)} title="تسجيل/تحديث بصمة الوجه"
             style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,color:"#fff",fontSize:14,fontWeight:700,padding:"6px 10px",cursor:"pointer"}}>
             {hasFace?"🟢":"📷"}
           </button>
@@ -797,6 +836,13 @@ function AdminPanel({employee,onLogout}){
           <p style={{margin:0,fontSize:12,color:"#854d0e",fontWeight:600}}>📷 سجّل بصمة وجهك لتفعيل التحقق الأمني</p>
           <button onClick={()=>setShowFaceEnroll(true)} style={{background:"#facc15",border:"none",borderRadius:8,padding:"5px 12px",fontSize:11,fontWeight:700,color:"#713f12",cursor:"pointer"}}>تسجيل الآن</button>
         </div>
+      )}
+      {showFaceResetCode&&(
+        <FaceResetCodeModal
+          correctCode={employee.faceResetCode}
+          onSuccess={()=>{ setShowFaceResetCode(false); setShowFaceEnroll(true); }}
+          onCancel={()=>setShowFaceResetCode(false)}
+        />
       )}
       {showFaceEnroll&&(
         <FaceCaptureModal
@@ -1225,6 +1271,7 @@ function HomeScreen({employee,onLogout}){
   const [sheetExcuses,setSheetExcuses]=useState(null); // أحدث حالة الطلبات من Google Sheets
   const attendanceLock=useRef(false); // قفل يمنع تسجيل حضور/انصراف مكرر عند الضغط المتكرر السريع
   const [showFaceEnroll,setShowFaceEnroll]=useState(false);
+  const [showFaceResetCode,setShowFaceResetCode]=useState(false);
   const [hasFace,setHasFace]=useState(!!employee.faceDescriptor);
   const [adminFaces,setAdminFaces]=useState([]); // بصمات وجوه المديرين (تُقبل بديلاً عن وجه الموظف)
   const [showFaceVerify,setShowFaceVerify]=useState(false); // تحقق الوجه قبل تسجيل الحضور/الانصراف
@@ -1434,6 +1481,13 @@ function HomeScreen({employee,onLogout}){
           ]}
           onDone={()=>{ setShowFaceVerify(false); handleAttendance(); }}
           onCancel={()=>setShowFaceVerify(false)}
+        />
+      )}
+      {showFaceResetCode&&(
+        <FaceResetCodeModal
+          correctCode={employee.faceResetCode}
+          onSuccess={()=>{ setShowFaceResetCode(false); setShowFaceEnroll(true); }}
+          onCancel={()=>setShowFaceResetCode(false)}
         />
       )}
       {showFaceEnroll&&(
@@ -1744,7 +1798,7 @@ function HomeScreen({employee,onLogout}){
                   </p>
                 </div>
               </div>
-              <button onClick={()=>setShowFaceEnroll(true)}
+              <button onClick={()=>hasFace?setShowFaceResetCode(true):setShowFaceEnroll(true)}
                 style={{width:"100%",marginTop:10,background:hasFace?"#fff":"#facc15",border:hasFace?"1px solid #86efac":"none",borderRadius:10,padding:"10px 0",fontSize:13,fontWeight:700,color:hasFace?"#166534":"#713f12",cursor:"pointer"}}>
                 {hasFace?"إعادة تسجيل الوجه":"تسجيل الوجه الآن"}
               </button>
