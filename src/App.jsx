@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 // ══════════════════════════════════════════════════════════════
 //  ربط Google Sheets
@@ -975,6 +975,7 @@ function HomeScreen({employee,onLogout}){
   const [simulated,setSimulated]=useState(false);
   const [,forceUpdate]=useState(0);
   const [sheetExcuses,setSheetExcuses]=useState(null); // أحدث حالة الطلبات من Google Sheets
+  const attendanceLock=useRef(false); // قفل يمنع تسجيل حضور/انصراف مكرر عند الضغط المتكرر السريع
 
   // جلب أحدث حالة الطلبات (الموافقة/الرفض) من Google Sheets دائماً
   const refreshMyRequests=useCallback(()=>{
@@ -1007,6 +1008,7 @@ function HomeScreen({employee,onLogout}){
   function save(updated){ setRecords(updated); saveEmpData(employee.id,updated); }
 
   function handleAttendance(){
+    if(attendanceLock.current) return; // يمنع الضغط المتكرر السريع
     // التحقق من إمكانية التسجيل
     if(!isCheckedIn&&!canCheckIn()){
       setGpsState("error");
@@ -1018,15 +1020,16 @@ function HomeScreen({employee,onLogout}){
       setGpsMsg("وقت تسجيل الانصراف من 12:00 م إلى 11:59 م فقط");
       return;
     }
+    attendanceLock.current=true;
     setGpsState("locating"); setGpsMsg("جارٍ تحديد موقعك..."); setSimulated(false);
     if(!navigator.geolocation){ doSimulate(); return; }
     navigator.geolocation.getCurrentPosition(
       pos=>{
         const dist=getDistance(pos.coords.latitude,pos.coords.longitude,OFFICE.lat,OFFICE.lng);
-        if(dist>OFFICE.radius){ setGpsState("far"); setGpsMsg(`أنت على بُعد ${Math.round(dist)} متر — يجب أن تكون ضمن ${OFFICE.radius} متر`); }
+        if(dist>OFFICE.radius){ setGpsState("far"); setGpsMsg(`أنت على بُعد ${Math.round(dist)} متر — يجب أن تكون ضمن ${OFFICE.radius} متر`); attendanceLock.current=false; }
         else afterGPS();
       },
-      err=>{ if(err.code===1){setGpsState("denied");setGpsMsg("يرجى السماح بالوصول للموقع");}else doSimulate(); },
+      err=>{ if(err.code===1){setGpsState("denied");setGpsMsg("يرجى السماح بالوصول للموقع");}else doSimulate(); attendanceLock.current=false; },
       {enableHighAccuracy:true,timeout:12000}
     );
   }
@@ -1034,12 +1037,12 @@ function HomeScreen({employee,onLogout}){
   function doSimulate(){ setSimulated(true); afterGPS(); }
 
   function afterGPS(){
-    if(isCheckedIn){ setShowCheckout(true); setGpsState(null); }
+    if(isCheckedIn){ setShowCheckout(true); setGpsState(null); attendanceLock.current=false; }
     else doCheckIn();
   }
 
   function doCheckIn(){
-    if(todayRec){ setGpsState("error"); setGpsMsg("تم تسجيل حضورك وانصرافك اليوم مسبقاً"); return; }
+    if(todayRec){ setGpsState("error"); setGpsMsg("تم تسجيل حضورك وانصرافك اليوم مسبقاً"); attendanceLock.current=false; return; }
     const now=new Date().toISOString();
     const status=checkInStatus(now);
     const covered = status==="late" ? findCoveringExcuse(employee.id, now) : null;
@@ -1048,12 +1051,15 @@ function HomeScreen({employee,onLogout}){
     save([...records,newRecord]);
     gsSaveAttendance(employee, newRecord); // حفظ في Google Sheets
     setGpsState("ok");
+    attendanceLock.current=false;
     if(status==="late"&&covered) setGpsMsg("تم تسجيل الحضور — تأخير مغطّى بزمنية معتمدة ✓ بدون خصم");
     else if(status==="late") setGpsMsg(`تم تسجيل الحضور — ⚠️ تأخير — سيُطرح ${ded.toLocaleString()} دينار`);
     else setGpsMsg("تم تسجيل الحضور بنجاح ✓ في الوقت المحدد");
   }
 
   function confirmCheckout(){
+    if(attendanceLock.current) return; // يمنع الضغط المتكرر السريع
+    attendanceLock.current=true;
     const now=new Date().toISOString();
     const m = nowMin();
     const isEarly = isEarlyLeaveTime(m);
@@ -1071,6 +1077,7 @@ function HomeScreen({employee,onLogout}){
     const updatedRec = updatedRecords.find(r=>r.id===todayRec.id);
     if(updatedRec) gsSaveAttendance(employee, updatedRec);
     setShowCheckout(false); setGpsState("ok");
+    attendanceLock.current=false;
     if(isEarly&&covered) setGpsMsg("تم تسجيل الانصراف — خروج مبكر مغطّى بزمنية معتمدة ✓ بدون خصم");
     else if(isEarly) setGpsMsg(`تم تسجيل الانصراف — ⚠️ خروج مبكر — سيُطرح ${earlyDed.toLocaleString()} دينار`);
     else setGpsMsg("تم تسجيل الانصراف بنجاح ✓");
