@@ -974,6 +974,19 @@ function HomeScreen({employee,onLogout}){
   const [historySubTab,setHistorySubTab]=useState("attendance"); // attendance | requests
   const [simulated,setSimulated]=useState(false);
   const [,forceUpdate]=useState(0);
+  const [sheetExcuses,setSheetExcuses]=useState(null); // أحدث حالة الطلبات من Google Sheets
+
+  // جلب أحدث حالة الطلبات (الموافقة/الرفض) من Google Sheets دائماً
+  function refreshMyRequests(){
+    gsGetExcusesAll().then(all=>{
+      setSheetExcuses(all.filter(e=>String(e.empId).trim()===String(employee.id).trim()));
+    }).catch(()=>{});
+  }
+  useEffect(()=>{
+    refreshMyRequests();
+    const t=setInterval(refreshMyRequests,15000); // تحديث تلقائي كل 15 ثانية
+    return ()=>clearInterval(t);
+  },[employee.id]);
 
   // قراءة مبلغ الخصم الحالي
   function currentDeduction(){ try{ return JSON.parse(localStorage.getItem("lateDeduction")||JSON.stringify(RULES.lateDeduction)); }catch{ return RULES.lateDeduction; } }
@@ -989,7 +1002,7 @@ function HomeScreen({employee,onLogout}){
 
   const excLeft=MONTHLY_LIMITS.excuses-monthExcuses(employee.id);
   const leaveLeft=MONTHLY_LIMITS.leaves-monthLeaves(employee.id);
-  const myRequests=getExcuses(employee.id).sort((a,b)=>b.id-a.id);
+  const myRequests=(sheetExcuses!==null?sheetExcuses:getExcuses(employee.id)).sort((a,b)=>b.id-a.id);
 
   function save(updated){ setRecords(updated); saveEmpData(employee.id,updated); }
 
@@ -1124,7 +1137,7 @@ function HomeScreen({employee,onLogout}){
           onConfirm={confirmCheckout} onCancel={()=>{setShowCheckout(false);setGpsState(null);}}/>
       )}
       {showExcuse&&(
-        <ExcuseModal employee={employee} onClose={()=>{setShowExcuse(false);forceUpdate(n=>n+1);}}/>
+        <ExcuseModal employee={employee} onClose={()=>{setShowExcuse(false);forceUpdate(n=>n+1);refreshMyRequests();}}/>
       )}
 
       <div style={S.header}>
@@ -1290,7 +1303,7 @@ function HomeScreen({employee,onLogout}){
             {/* تبديل بين سجل الحضور وطلباتي */}
             <div style={{display:"flex",gap:8,marginBottom:14}}>
               {[{k:"attendance",label:"سجل الحضور"},{k:"requests",label:`طلباتي${myRequests.length?` (${myRequests.length})`:""}`}].map(({k,label})=>(
-                <button key={k} onClick={()=>setHistorySubTab(k)}
+                <button key={k} onClick={()=>{setHistorySubTab(k);if(k==="requests")refreshMyRequests();}}
                   style={{flex:1,padding:"9px 6px",borderRadius:10,border:"2px solid",cursor:"pointer",fontSize:13,fontWeight:700,
                     borderColor:historySubTab===k?"#6366f1":"#e2e8f0",
                     background:historySubTab===k?"#ede9fe":"#f8fafc",
@@ -1436,10 +1449,22 @@ function HomeScreen({employee,onLogout}){
 //  الجذر
 // ══════════════════════════════════════════════════════════════
 export default function App(){
-  const [user,setUser]=useState(null);
-  if(!user) return <LoginScreen onLogin={setUser}/>;
-  if(user.isAdmin) return <AdminPanel onLogout={()=>setUser(null)}/>;
-  return <HomeScreen employee={user} onLogout={()=>setUser(null)}/>;
+  const [user,setUser]=useState(()=>{
+    try{ return JSON.parse(localStorage.getItem("currentUser")||"null"); }catch{ return null; }
+  });
+
+  function handleLogin(u){
+    try{ localStorage.setItem("currentUser",JSON.stringify(u)); }catch{}
+    setUser(u);
+  }
+  function handleLogout(){
+    try{ localStorage.removeItem("currentUser"); }catch{}
+    setUser(null);
+  }
+
+  if(!user) return <LoginScreen onLogin={handleLogin}/>;
+  if(user.isAdmin) return <AdminPanel onLogout={handleLogout}/>;
+  return <HomeScreen employee={user} onLogout={handleLogout}/>;
 }
 
 // ══════════════════════════════════════════════════════════════
