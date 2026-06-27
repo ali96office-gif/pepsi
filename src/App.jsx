@@ -120,7 +120,6 @@ const RULES = {
 const MONTHLY_LIMITS = { excuses: 2, leaves: 1 };
 
 // الموظفون يُجلبون من Google Sheets ديناميكياً عند تسجيل الدخول
-const EMPLOYEES = []; // لا تعديل هنا — البيانات من Sheets
 const ADMIN = { id:"ADMIN", name:"المدير العام", pin:"0000", isAdmin:true };
 
 // ══════════════════════════════════════════════════════════════
