@@ -76,6 +76,28 @@ async function gsSaveFaceDescriptor(empId, descriptor) {
   } catch (e) { console.warn("GS save face descriptor failed", e); }
 }
 
+async function gsSaveWorkDays(monthKeyStr, workDays) {
+  try {
+    await fetch(GS_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "saveWorkDays", monthKey: monthKeyStr, workDays }),
+    });
+  } catch (e) { console.warn("GS save work days failed", e); }
+}
+
+async function gsGetWorkDays() {
+  try {
+    const response = await fetch(`${GS_URL}?action=getWorkDays`);
+    const data = await response.json();
+    return data.workDays || [];
+  } catch (e) {
+    console.warn("gsGetWorkDays failed", e);
+    return [];
+  }
+}
+
 function gsGetEmployees() {
   return new Promise(async (resolve) => {
     try {
@@ -737,6 +759,43 @@ function LoginScreen({onLogin}){
 // ══════════════════════════════════════════════════════════════
 //  لوحة المدير
 // ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+//  شريط بحث وفلترة قابل لإعادة الاستخدام (طلبات / خصومات / رواتب / موظفون)
+// ══════════════════════════════════════════════════════════════
+function FilterBar({search,onSearch,placeholder,filter,onFilter,dateFrom,onDateFrom,dateTo,onDateTo,showPeriod=true}){
+  return(
+    <div style={{padding:"0 16px 12px"}}>
+      {showPeriod&&(
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:10}}>
+          {[["today","اليوم"],["week","الأسبوع"],["all","الكل"],["range","من/إلى"]].map(([k,l])=>(
+            <button key={k} onClick={()=>onFilter(k)}
+              style={{flex:1,padding:"8px 4px",borderRadius:10,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,minWidth:50,
+                background:filter===k?"#6366f1":"#f1f5f9",color:filter===k?"#fff":"#64748b"}}>
+              {l}
+            </button>
+          ))}
+        </div>
+      )}
+      {showPeriod&&filter==="range"&&(
+        <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
+          <div style={{flex:1}}>
+            <p style={{margin:"0 0 4px",fontSize:11,color:"#64748b",fontWeight:600}}>من</p>
+            <input type="date" value={dateFrom} onChange={e=>onDateFrom(e.target.value)}
+              style={{width:"100%",background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:10,padding:"8px 12px",fontSize:13,outline:"none",color:"#0f172a",boxSizing:"border-box"}}/>
+          </div>
+          <div style={{flex:1}}>
+            <p style={{margin:"0 0 4px",fontSize:11,color:"#64748b",fontWeight:600}}>إلى</p>
+            <input type="date" value={dateTo} onChange={e=>onDateTo(e.target.value)}
+              style={{width:"100%",background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:10,padding:"8px 12px",fontSize:13,outline:"none",color:"#0f172a",boxSizing:"border-box"}}/>
+          </div>
+        </div>
+      )}
+      <input style={S.searchInput} placeholder={placeholder||"🔍  ابحث بالاسم أو الرقم الوظيفي..."}
+        value={search} onChange={e=>onSearch(e.target.value)}/>
+    </div>
+  );
+}
+
 function AdminPanel({employee,onLogout}){
   const [filter,setFilter]=useState("today");
   const [search,setSearch]=useState("");
@@ -755,13 +814,50 @@ function AdminPanel({employee,onLogout}){
   const [employees,setEmployees]=useState([]);
   const [dataLoading,setDataLoading]=useState(true);
   const [salaryMonth,setSalaryMonth]=useState(monthKey());
+  const [workDaysMap,setWorkDaysMap]=useState({}); // monthKey -> عدد أيام العمل بذلك الشهر
+  const [newWorkMonth,setNewWorkMonth]=useState(monthKey());
+  const [newWorkDays,setNewWorkDays]=useState("");
   const [showFaceEnroll,setShowFaceEnroll]=useState(false);
   const [showFaceResetCode,setShowFaceResetCode]=useState(false);
   const [hasFace,setHasFace]=useState(!!employee.faceDescriptor);
 
+  // فلاتر مستقلة لكل تبويب (بحث + فترة زمنية)
+  const [reqSearch,setReqSearch]=useState("");
+  const [reqFilter,setReqFilter]=useState("all");
+  const [reqDateFrom,setReqDateFrom]=useState(todayISO);
+  const [reqDateTo,setReqDateTo]=useState(todayISO);
+
+  const [dedSearch,setDedSearch]=useState("");
+  const [dedFilter,setDedFilter]=useState("all");
+  const [dedDateFrom,setDedDateFrom]=useState(todayISO);
+  const [dedDateTo,setDedDateTo]=useState(todayISO);
+
+  const [salSearch,setSalSearch]=useState("");
+  const [empSearch,setEmpSearch]=useState("");
+
+  // دالة مساعدة: تاريخ الطلب الفعلي (وقت الزمنية/يوم الإجازة، أو تاريخ الإرسال كاحتياط)
+  function requestDateIso(req){
+    return (req.type==="excuse"&&req.excuseStart) ? req.excuseStart
+         : (req.type==="leave"&&req.leaveDate) ? req.leaveDate
+         : req.date;
+  }
+  // فلترة عامة بحسب الفترة الزمنية (اليوم/الأسبوع/الكل/من-إلى) لأي قائمة فيها تاريخ ISO
+  function withinPeriod(iso, filterKey, fromStr, toStr){
+    if(!iso) return filterKey==="all";
+    const d=new Date(iso);
+    if(filterKey==="today") return d.toDateString()===todayStr;
+    if(filterKey==="week"){ const w=new Date(); w.setDate(w.getDate()-7); return d>=w; }
+    if(filterKey==="range"){
+      const from=new Date(fromStr+"T00:00:00");
+      const to=new Date(toStr+"T23:59:59");
+      return d>=from && d<=to;
+    }
+    return true; // "all"
+  }
+
   async function loadAllData(){
     setDataLoading(true);
-    const [recs,excs,emps]=await Promise.all([gsGetAttendance(),gsGetExcusesAll(),gsGetEmployees()]);
+    const [recs,excs,emps,wd]=await Promise.all([gsGetAttendance(),gsGetExcusesAll(),gsGetEmployees(),gsGetWorkDays()]);
     setAllRecords(recs.map(r=>({
       ...r,
       checkOut:r.checkOut||null,
@@ -774,6 +870,9 @@ function AdminPanel({employee,onLogout}){
       emp:{id:ex.empId,name:ex.name,department:"",position:""}
     })));
     setEmployees(emps);
+    const wdMap={};
+    wd.forEach(w=>{ wdMap[w.monthKey]=w.workDays; });
+    setWorkDaysMap(wdMap);
     setDataLoading(false);
   }
 
@@ -782,6 +881,13 @@ function AdminPanel({employee,onLogout}){
   function saveDeduction(val){
     const n=Number(val);
     if(!isNaN(n)&&n>=0){ setDeduction(n); localStorage.setItem("lateDeduction",JSON.stringify(n)); }
+  }
+
+  function saveWorkDaysHandler(monthKeyStr,daysVal){
+    const n=Number(daysVal);
+    if(isNaN(n)||n<0) return;
+    setWorkDaysMap(prev=>({...prev,[monthKeyStr]:n}));
+    gsSaveWorkDays(monthKeyStr,n);
   }
 
   const todayStr=new Date().toDateString();
@@ -809,6 +915,41 @@ function AdminPanel({employee,onLogout}){
     if(req){
       await gsUpdateExcuseStatus(empId, req.date, approve?"approved":"rejected");
       setAllRequests(prev=>prev.map(e=>e.id===id?{...e,status:approve?"approved":"rejected",decisionDate:new Date().toISOString()}:e));
+
+      // عند الموافقة على زمنية/إجازة، نلغي فقط الجزء المغطّى من الخصم (تأخير الدخول أو الخروج المبكر) لنفس اليوم
+      if(approve){
+        let coveredDayKey=null;
+        // "excuse" = زمنية صباحية تغطي تأخير الدخول | "leave" = إجازة/زمنية تغطي الخروج المبكر أو اليوم كامل
+        if(req.type==="excuse" && req.excuseStart) coveredDayKey=dateKey(req.excuseStart);
+        else if(req.type==="leave" && req.leaveDate) coveredDayKey=dateKey(req.leaveDate);
+
+        if(coveredDayKey){
+          const matchingRecord=allRecords.find(r=>
+            r.emp.id===empId && r.checkIn && dateKey(r.checkIn)===coveredDayKey && (r.deduction||0)>0
+          );
+          if(matchingRecord){
+            const wasLate = matchingRecord.status==="late";
+            const isEarlyLeaveRecord = matchingRecord.checkOut
+              ? (()=>{ const co=new Date(matchingRecord.checkOut); const m=co.getHours()*60+co.getMinutes();
+                  return m>=toMin(RULES.earlyLeave.from.h,RULES.earlyLeave.from.m) && m<=toMin(RULES.earlyLeave.to.h,RULES.earlyLeave.to.m); })()
+              : false;
+
+            // نطرح فقط حصة النوع المعتمد (تأخير دخول أو خروج مبكر) من الخصم الحالي، دون إعادة بناء الإجمالي من الصفر
+            // (لو عندنا موافقتان منفصلتان بنفس اليوم، كل واحدة تطرح حصتها فقط بدل استرجاع الحصة الملغاة سابقاً)
+            let shareToRemove=0;
+            if(req.type==="excuse" && wasLate) shareToRemove=RULES.lateDeduction;
+            else if(req.type==="leave" && isEarlyLeaveRecord) shareToRemove=RULES.lateDeduction;
+
+            const newDeduction=Math.max(0,(matchingRecord.deduction||0)-shareToRemove);
+
+            if(shareToRemove>0 && newDeduction!==(matchingRecord.deduction||0)){
+              const clearedRecord={...matchingRecord, deduction:newDeduction||undefined};
+              setAllRecords(prev=>prev.map(r=>r===matchingRecord?clearedRecord:r));
+              gsSaveAttendance(matchingRecord.emp, clearedRecord);
+            }
+          }
+        }
+      }
     }
   }
 
@@ -862,7 +1003,7 @@ function AdminPanel({employee,onLogout}){
 
       {/* Tabs */}
       <div style={{display:"flex",borderBottom:"1px solid #e2e8f0",background:"#fff",flexShrink:0,overflowX:"auto"}}>
-        {[["records","السجلات"],["requests","الطلبات"+(pendingReqs.length?` (${pendingReqs.length})`:"")],["deductions","الخصومات"],["salaries","الرواتب"],["employees","الموظفون"]].map(([k,l])=>(
+        {[["records","السجلات"],["requests","الطلبات"+(pendingReqs.length?` (${pendingReqs.length})`:"")],["deductions","الخصومات"],["salaries","الرواتب"],["workdays","أيام العمل"],["employees","الموظفون"]].map(([k,l])=>(
           <button key={k} onClick={()=>setTab(k)}
             style={{flex:1,padding:"11px 4px",border:"none",cursor:"pointer",fontSize:12,fontWeight:700,
               background:"none",color:tab===k?"#6366f1":"#94a3b8",
@@ -965,12 +1106,23 @@ function AdminPanel({employee,onLogout}){
         </>}
 
         {/* ── الطلبات ── */}
-        {tab==="requests"&&(
-          <div style={{padding:"16px 16px 90px"}}>
-            <h2 style={{...S.sectionTitle,paddingTop:0}}>طلبات الزمنيات والإجازات</h2>
-            {allRequests.length===0
+        {tab==="requests"&&(()=>{
+          const filteredRequests=allRequests
+            .filter(req=>withinPeriod(requestDateIso(req),reqFilter,reqDateFrom,reqDateTo))
+            .filter(req=>req.emp.name.includes(reqSearch)||req.emp.id.includes(reqSearch));
+          return(
+          <div style={{padding:"16px 0 90px"}}>
+            <h2 style={{...S.sectionTitle,paddingTop:0,padding:"0 16px"}}>طلبات الزمنيات والإجازات</h2>
+            <FilterBar
+              search={reqSearch} onSearch={setReqSearch}
+              filter={reqFilter} onFilter={setReqFilter}
+              dateFrom={reqDateFrom} onDateFrom={setReqDateFrom}
+              dateTo={reqDateTo} onDateTo={setReqDateTo}
+            />
+            <div style={{padding:"0 16px"}}>
+            {filteredRequests.length===0
               ?<div style={S.empty}><span style={{fontSize:48}}>📭</span><p style={{color:"#94a3b8",marginTop:12}}>لا يوجد طلبات</p></div>
-              :allRequests.sort((a,b)=>b.id-a.id).map(req=>{
+              :filteredRequests.sort((a,b)=>b.id-a.id).map(req=>{
                 const excuseEndIso = req.type==="excuse" && req.excuseStart
                   ? new Date(new Date(req.excuseStart).getTime()+RULES.excuseHours*3600000).toISOString()
                   : null;
@@ -1025,12 +1177,19 @@ function AdminPanel({employee,onLogout}){
                 );
               })
             }
+            </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* ── الخصومات ── */}
-        {tab==="deductions"&&(
-          <div style={{padding:"16px 16px 90px"}}>
+        {tab==="deductions"&&(()=>{
+          const filteredDeductions=allRecords.filter(r=>r.deduction)
+            .filter(r=>withinPeriod(r.checkIn,dedFilter,dedDateFrom,dedDateTo))
+            .filter(r=>r.emp.name.includes(dedSearch)||r.emp.id.includes(dedSearch));
+          return(
+          <>
+          <div style={{padding:"16px 16px 0"}}>
             <h2 style={{...S.sectionTitle,paddingTop:0}}>إعدادات الخصومات</h2>
 
             <div style={{background:"#fff",borderRadius:16,padding:20,border:"1px solid #e2e8f0",marginBottom:16}}>
@@ -1060,9 +1219,17 @@ function AdminPanel({employee,onLogout}){
             </div>
 
             <h3 style={{fontSize:15,fontWeight:700,color:"#0f172a",margin:"20px 0 12px"}}>سجل الخصومات</h3>
-            {allRecords.filter(r=>r.deduction).length===0
+          </div>
+          <FilterBar
+            search={dedSearch} onSearch={setDedSearch}
+            filter={dedFilter} onFilter={setDedFilter}
+            dateFrom={dedDateFrom} onDateFrom={setDedDateFrom}
+            dateTo={dedDateTo} onDateTo={setDedDateTo}
+          />
+          <div style={{padding:"0 16px 90px"}}>
+            {filteredDeductions.length===0
               ?<div style={S.empty}><span style={{fontSize:48}}>💸</span><p style={{color:"#94a3b8",marginTop:12}}>لا يوجد خصومات</p></div>
-              :allRecords.filter(r=>r.deduction).map((r,i)=>(
+              :filteredDeductions.map((r,i)=>(
                 <div key={i} style={{...S.recordCard,borderRight:"4px solid #ef4444"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                     <div>
@@ -1075,22 +1242,37 @@ function AdminPanel({employee,onLogout}){
               ))
             }
           </div>
-        )}
+          </>
+          );
+        })()}
 
         {/* ── الرواتب ── */}
         {tab==="salaries"&&(()=>{
           const [y,m]=salaryMonth.split("-").map(Number);
           const monthLabel=new Date(y,m,1).toLocaleDateString("ar-SA",{year:"numeric",month:"long"});
+          const workDaysForMonth=Number(workDaysMap[salaryMonth])||0;
+
+          // كل أيام الشهر المحدد التي سجّل فيها أي موظف حضوراً فعلياً (يوم عمل حقيقي، يستثني العطل تلقائياً)
+          const monthRecords=allRecords.filter(r=>r.checkIn && monthKey(r.checkIn)===salaryMonth);
+          const workingDaysSet=new Set(monthRecords.map(r=>dateKey(r.checkIn)));
+
           const rows=employees.map(emp=>{
-            const empDed=allRecords
-              .filter(r=>r.emp.id===emp.id && monthKey(r.checkIn)===salaryMonth)
-              .reduce((a,r)=>a+(r.deduction||0),0);
+            const empRecordsThisMonth=monthRecords.filter(r=>r.emp.id===emp.id);
+            const empDed=empRecordsThisMonth.reduce((a,r)=>a+(r.deduction||0),0);
+            const empWorkedDays=new Set(empRecordsThisMonth.map(r=>dateKey(r.checkIn)));
+
+            // أيام الغياب = أيام العمل الفعلية (سجّل فيها أحد) التي لم يحضر بها هذا الموظف
+            const absentDays=[...workingDaysSet].filter(day=>!empWorkedDays.has(day)).length;
             const base=Number(emp.salary)||0;
-            return {emp, base, deduction:empDed, net:base-empDed};
+            const dailyRateForEmp=workDaysForMonth>0 ? base/workDaysForMonth : 0;
+            const absenceDeduction=Math.round(absentDays*dailyRateForEmp);
+
+            return {emp, base, deduction:empDed, absentDays, absenceDeduction, net:base-empDed-absenceDeduction};
           });
           const totalBase=rows.reduce((a,r)=>a+r.base,0);
-          const totalDed=rows.reduce((a,r)=>a+r.deduction,0);
+          const totalDed=rows.reduce((a,r)=>a+r.deduction+r.absenceDeduction,0);
           const totalNet=rows.reduce((a,r)=>a+r.net,0);
+          const filteredRows=rows.filter(({emp})=>emp.name.includes(salSearch)||emp.id.includes(salSearch));
           function shiftMonth(delta){
             const d=new Date(y,m+delta,1);
             setSalaryMonth(`${d.getFullYear()}-${d.getMonth()}`);
@@ -1098,6 +1280,13 @@ function AdminPanel({employee,onLogout}){
           return(
             <div style={{padding:"16px 16px 90px"}}>
               <h2 style={{...S.sectionTitle,paddingTop:0}}>الرواتب</h2>
+              {workDaysForMonth===0&&(
+                <div style={{background:"#fef9c3",border:"1px solid #fde047",borderRadius:12,padding:"10px 14px",marginBottom:14}}>
+                  <p style={{margin:0,fontSize:12,color:"#854d0e",fontWeight:600}}>
+                    ⚠️ لم يُحدَّد عدد أيام العمل لهذا الشهر بعد — اذهب لتبويب "أيام العمل" لتفعيل حساب خصم الغياب
+                  </p>
+                </div>
+              )}
 
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:"#fff",borderRadius:14,border:"1px solid #e2e8f0",padding:"10px 14px",marginBottom:16}}>
                 <button onClick={()=>shiftMonth(-1)} style={{background:"#f1f5f9",border:"none",borderRadius:10,width:34,height:34,fontSize:16,fontWeight:700,cursor:"pointer",color:"#475569"}}>›</button>
@@ -1118,9 +1307,13 @@ function AdminPanel({employee,onLogout}){
               </div>
 
               <h3 style={{fontSize:15,fontWeight:700,color:"#0f172a",margin:"20px 0 12px"}}>تفصيل كل موظف</h3>
-              {rows.length===0
+              <div style={{marginBottom:12}}>
+                <input style={S.searchInput} placeholder="🔍  ابحث بالاسم أو الرقم الوظيفي..."
+                  value={salSearch} onChange={e=>setSalSearch(e.target.value)}/>
+              </div>
+              {filteredRows.length===0
                 ?<div style={S.empty}><span style={{fontSize:48}}>💰</span><p style={{color:"#94a3b8",marginTop:12}}>لا يوجد موظفون</p></div>
-                :rows.map(({emp,base,deduction,net})=>(
+                :filteredRows.map(({emp,base,deduction,absentDays,absenceDeduction,net})=>(
                   <div key={emp.id} style={{...S.recordCard,borderRight:"4px solid #6366f1",marginBottom:10}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
                       <div>
@@ -1129,9 +1322,10 @@ function AdminPanel({employee,onLogout}){
                       </div>
                       <p style={{margin:0,fontSize:20,fontWeight:800,color:"#22c55e"}}>{net.toLocaleString()}</p>
                     </div>
-                    <div style={{display:"flex",gap:14,fontSize:12,color:"#64748b"}}>
+                    <div style={{display:"flex",gap:14,fontSize:12,color:"#64748b",flexWrap:"wrap"}}>
                       <span>الأساسي: <b style={{color:"#0f172a"}}>{base.toLocaleString()}</b></span>
-                      {deduction>0&&<span style={{color:"#dc2626"}}>الخصم: <b>−{deduction.toLocaleString()}</b></span>}
+                      {deduction>0&&<span style={{color:"#dc2626"}}>خصم التأخير: <b>−{deduction.toLocaleString()}</b></span>}
+                      {absentDays>0&&<span style={{color:"#dc2626"}}>غياب {absentDays} يوم: <b>−{absenceDeduction.toLocaleString()}</b></span>}
                     </div>
                   </div>
                 ))
@@ -1139,6 +1333,64 @@ function AdminPanel({employee,onLogout}){
               <p style={{fontSize:11,color:"#94a3b8",textAlign:"center",marginTop:16}}>
                 💡 الراتب الأساسي يُحدَّث من شيت Employees (عمود الراتب)
               </p>
+            </div>
+          );
+        })()}
+
+        {/* ── أيام العمل ── */}
+        {tab==="workdays"&&(()=>{
+          const months=Object.keys(workDaysMap).sort().reverse();
+          function monthKeyToInputValue(mk){
+            const [y,m]=mk.split("-").map(Number);
+            return `${y}-${String(m+1).padStart(2,"0")}`;
+          }
+          function inputValueToMonthKey(val){
+            const [y,m]=val.split("-").map(Number);
+            return `${y}-${m-1}`;
+          }
+          return(
+            <div style={{padding:"16px 16px 90px"}}>
+              <h2 style={{...S.sectionTitle,paddingTop:0}}>أيام العمل الشهرية</h2>
+              <p style={{fontSize:12,color:"#64748b",margin:"-8px 0 16px"}}>
+                حدّد عدد أيام العمل الفعلية لكل شهر (تستثني العطل الرسمية)؛ يُستخدم هذا الرقم لحساب الراتب اليومي وخصم الغياب لكل الموظفين بذلك الشهر.
+              </p>
+
+              <div style={{background:"#fff",borderRadius:16,padding:20,border:"1px solid #e2e8f0",marginBottom:20}}>
+                <p style={{margin:"0 0 10px",fontSize:13,color:"#64748b",fontWeight:600}}>إضافة / تعديل شهر</p>
+                <div style={{display:"flex",gap:8,marginBottom:10}}>
+                  <input type="month" value={monthKeyToInputValue(newWorkMonth)}
+                    onChange={e=>setNewWorkMonth(inputValueToMonthKey(e.target.value))}
+                    style={{flex:1,background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:10,padding:"10px 12px",fontSize:13,outline:"none",color:"#0f172a"}}/>
+                  <input type="number" placeholder="عدد الأيام" value={newWorkDays}
+                    onChange={e=>setNewWorkDays(e.target.value)}
+                    style={{width:110,background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:10,padding:"10px 12px",fontSize:13,outline:"none",color:"#0f172a"}}/>
+                </div>
+                <button onClick={()=>{ saveWorkDaysHandler(newWorkMonth,newWorkDays); setNewWorkDays(""); }}
+                  disabled={!newWorkDays}
+                  style={{width:"100%",background:"#6366f1",border:"none",borderRadius:10,padding:"10px 0",fontSize:13,fontWeight:700,color:"#fff",cursor:"pointer",opacity:newWorkDays?1:0.5}}>
+                  حفظ
+                </button>
+              </div>
+
+              <h3 style={{fontSize:15,fontWeight:700,color:"#0f172a",margin:"0 0 12px"}}>الأشهر المسجَّلة</h3>
+              {months.length===0
+                ?<div style={S.empty}><span style={{fontSize:48}}>📅</span><p style={{color:"#94a3b8",marginTop:12}}>لا يوجد أشهر مسجَّلة بعد</p></div>
+                :months.map(mk=>{
+                  const [y,m]=mk.split("-").map(Number);
+                  const label=new Date(y,m,1).toLocaleDateString("ar-SA",{year:"numeric",month:"long"});
+                  return(
+                    <div key={mk} style={{...S.recordCard,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <p style={{margin:0,fontWeight:700,fontSize:14}}>{label}</p>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <input type="number" value={workDaysMap[mk]}
+                          onChange={e=>saveWorkDaysHandler(mk,e.target.value)}
+                          style={{width:70,background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:"6px 8px",fontSize:13,textAlign:"center",outline:"none",color:"#0f172a"}}/>
+                        <span style={{fontSize:12,color:"#64748b"}}>يوم</span>
+                      </div>
+                    </div>
+                  );
+                })
+              }
             </div>
           );
         })()}
@@ -1209,7 +1461,12 @@ function AdminPanel({employee,onLogout}){
                 }
               </>
             ):(
-              employees.map(emp=>{
+              <>
+                <div style={{marginBottom:12}}>
+                  <input style={S.searchInput} placeholder="🔍  ابحث بالاسم أو الرقم الوظيفي..."
+                    value={empSearch} onChange={e=>setEmpSearch(e.target.value)}/>
+                </div>
+                {employees.filter(emp=>emp.name.includes(empSearch)||emp.id.includes(empSearch)).map(emp=>{
                 const empRecords=allRecords.filter(r=>r.emp.id===emp.id);
                 const empDed=empRecords.reduce((a,r)=>a+(r.deduction||0),0);
                 const empHours=empRecords.reduce((a,r)=>r.checkOut?a+((new Date(r.checkOut)-new Date(r.checkIn))/3600000):a,0);
@@ -1245,8 +1502,10 @@ function AdminPanel({employee,onLogout}){
                       </span>}
                     </div>
                   </div>
-                );
-              })
+                    );
+                  })
+                }
+              </>
             )}
           </div>
         )}
