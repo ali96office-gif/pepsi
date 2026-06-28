@@ -919,7 +919,7 @@ function AdminPanel({employee,onLogout}){
       // عند الموافقة على زمنية/إجازة، نلغي فقط الجزء المغطّى من الخصم (تأخير الدخول أو الخروج المبكر) لنفس اليوم
       if(approve){
         let coveredDayKey=null;
-        // "excuse" = زمنية صباحية تغطي تأخير الدخول | "leave" = إجازة/زمنية تغطي الخروج المبكر أو اليوم كامل
+        // "excuse" بنوعيها: excuseKind="late" تغطي تأخير الدخول، excuseKind="early" تغطي الخروج المبكر | "leave" = إجازة يوم كامل
         if(req.type==="excuse" && req.excuseStart) coveredDayKey=dateKey(req.excuseStart);
         else if(req.type==="leave" && req.leaveDate) coveredDayKey=dateKey(req.leaveDate);
 
@@ -937,8 +937,12 @@ function AdminPanel({employee,onLogout}){
             // نطرح فقط حصة النوع المعتمد (تأخير دخول أو خروج مبكر) من الخصم الحالي، دون إعادة بناء الإجمالي من الصفر
             // (لو عندنا موافقتان منفصلتان بنفس اليوم، كل واحدة تطرح حصتها فقط بدل استرجاع الحصة الملغاة سابقاً)
             let shareToRemove=0;
-            if(req.type==="excuse" && wasLate) shareToRemove=RULES.lateDeduction;
-            else if(req.type==="leave" && isEarlyLeaveRecord) shareToRemove=RULES.lateDeduction;
+            if(req.type==="excuse" && req.excuseKind==="early" && isEarlyLeaveRecord) shareToRemove=RULES.lateDeduction;
+            else if(req.type==="excuse" && req.excuseKind!=="early" && wasLate) shareToRemove=RULES.lateDeduction;
+            else if(req.type==="leave"){
+              // الإجازة (يوم كامل) تغطي أي خصم موجود بذلك اليوم (تأخير و/أو خروج مبكر)
+              shareToRemove=(wasLate?RULES.lateDeduction:0)+(isEarlyLeaveRecord?RULES.lateDeduction:0);
+            }
 
             const newDeduction=Math.max(0,(matchingRecord.deduction||0)-shareToRemove);
 
