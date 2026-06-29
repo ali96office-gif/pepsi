@@ -65,13 +65,13 @@ async function gsUpdateExcuseStatus(empId, excuseDate, status) {
   } catch (e) { console.warn("GS update status failed", e); }
 }
 
-async function gsSaveFaceDescriptor(empId, descriptor) {
+async function gsSaveFaceDescriptor(empId, descriptor, photo) {
   try {
     await fetch(GS_URL, {
       method: "POST",
       mode: "no-cors",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "saveFaceDescriptor", empId, descriptor }),
+      body: JSON.stringify({ action: "saveFaceDescriptor", empId, descriptor, photo: photo||"" }),
     });
   } catch (e) { console.warn("GS save face descriptor failed", e); }
 }
@@ -96,6 +96,40 @@ async function gsGetWorkDays() {
     console.warn("gsGetWorkDays failed", e);
     return [];
   }
+}
+
+// يجلب الوقت الحقيقي من سيرفر Google (لمنع التلاعب بساعة الجهاز عند تسجيل الحضور/الانصراف)
+async function gsGetServerTime() {
+  try {
+    const response = await fetch(`${GS_URL}?action=getServerTime`);
+    const data = await response.json();
+    return data.now || new Date().toISOString(); // fallback لساعة الجهاز فقط لو فشل الاتصال
+  } catch (e) {
+    console.warn("gsGetServerTime failed, falling back to local time", e);
+    return new Date().toISOString();
+  }
+}
+
+async function gsGetAttendanceLock() {
+  try {
+    const response = await fetch(`${GS_URL}?action=getAttendanceLock`);
+    const data = await response.json();
+    return !!data.locked;
+  } catch (e) {
+    console.warn("gsGetAttendanceLock failed", e);
+    return false;
+  }
+}
+
+async function gsSetAttendanceLock(locked) {
+  try {
+    await fetch(GS_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "setAttendanceLock", locked }),
+    });
+  } catch (e) { console.warn("GS set attendance lock failed", e); }
 }
 
 function gsGetEmployees() {
@@ -279,7 +313,19 @@ function exportCSV(records){
 // ══════════════════════════════════════════════════════════════
 function LiveClock(){
   const [now,setNow]=useState(new Date());
-  useEffect(()=>{ const t=setInterval(()=>setNow(new Date()),1000); return ()=>clearInterval(t); },[]);
+  const offsetRef=useRef(0); // الفرق (مليثانية) بين وقت السيرفر ووقت الجهاز
+
+  useEffect(()=>{
+    let cancelled=false;
+    gsGetServerTime().then(serverIso=>{
+      if(cancelled) return;
+      offsetRef.current = new Date(serverIso).getTime() - Date.now();
+      setNow(new Date(Date.now()+offsetRef.current));
+    }).catch(()=>{});
+    const t=setInterval(()=>setNow(new Date(Date.now()+offsetRef.current)),1000);
+    return ()=>{ cancelled=true; clearInterval(t); };
+  },[]);
+
   const day = now.toLocaleDateString("ar-SA",{weekday:"long"});
   const date = now.toLocaleDateString("ar-SA",{year:"numeric",month:"long",day:"numeric"});
   return(
@@ -422,9 +468,22 @@ function FaceCaptureModal({mode,acceptedDescriptors,onDone,onCancel}){
       }
       const descriptor=Array.from(detection.descriptor);
       if(mode==="enroll"){
+        // التقاط صورة مصغّرة ومضغوطة (للعرض البشري فقط؛ التحقق الفعلي يعتمد على البصمة الرقمية أعلاه)
+        let photo="";
+        try{
+          const canvas=document.createElement("canvas");
+          const targetWidth=160;
+          const scale=targetWidth/videoRef.current.videoWidth;
+          canvas.width=targetWidth;
+          canvas.height=videoRef.current.videoHeight*scale;
+          const ctx=canvas.getContext("2d");
+          ctx.translate(canvas.width,0); ctx.scale(-1,1); // نفس انعكاس المعاينة (مرآة) لصورة طبيعية المظهر
+          ctx.drawImage(videoRef.current,0,0,canvas.width,canvas.height);
+          photo=canvas.toDataURL("image/jpeg",0.5);
+        }catch(e){ /* تجاهل فشل التقاط الصورة، البصمة الرقمية تكفي للتحقق */ }
         stopCamera();
         setStatus("success"); setMessage("تم تسجيل الوجه بنجاح ✓");
-        setTimeout(()=>onDone(descriptor),900);
+        setTimeout(()=>onDone(descriptor,photo),900);
       } else {
         const matched=(acceptedDescriptors||[]).some(saved=>faceDistance(descriptor,saved)<=FACE_MATCH_THRESHOLD);
         if(matched){
@@ -811,6 +870,8 @@ function AdminPanel({employee,onLogout}){
   const [showFaceEnroll,setShowFaceEnroll]=useState(false);
   const [showFaceResetCode,setShowFaceResetCode]=useState(false);
   const [hasFace,setHasFace]=useState(!!employee.faceDescriptor);
+  const [attendanceLocked,setAttendanceLocked]=useState(false);
+  const [lockLoading,setLockLoading]=useState(false);
 
   // فلاتر مستقلة لكل تبويب (بحث + فترة زمنية)
   const [reqSearch,setReqSearch]=useState("");
@@ -848,7 +909,7 @@ function AdminPanel({employee,onLogout}){
 
   async function loadAllData(){
     setDataLoading(true);
-    const [recs,excs,emps,wd]=await Promise.all([gsGetAttendance(),gsGetExcusesAll(),gsGetEmployees(),gsGetWorkDays()]);
+    const [recs,excs,emps,wd,locked]=await Promise.all([gsGetAttendance(),gsGetExcusesAll(),gsGetEmployees(),gsGetWorkDays(),gsGetAttendanceLock()]);
     setAllRecords(recs.map(r=>({
       ...r,
       checkOut:r.checkOut||null,
@@ -864,6 +925,7 @@ function AdminPanel({employee,onLogout}){
     const wdMap={};
     wd.forEach(w=>{ wdMap[w.monthKey]=w.workDays; });
     setWorkDaysMap(wdMap);
+    setAttendanceLocked(locked);
     setDataLoading(false);
   }
 
@@ -879,6 +941,14 @@ function AdminPanel({employee,onLogout}){
     if(isNaN(n)||n<0) return;
     setWorkDaysMap(prev=>({...prev,[monthKeyStr]:n}));
     gsSaveWorkDays(monthKeyStr,n);
+  }
+
+  async function toggleAttendanceLock(){
+    setLockLoading(true);
+    const newState=!attendanceLocked;
+    await gsSetAttendanceLock(newState);
+    setAttendanceLocked(newState);
+    setLockLoading(false);
   }
 
   const todayStr=new Date().toDateString();
@@ -960,6 +1030,10 @@ function AdminPanel({employee,onLogout}){
         <button style={S.logoutBtn} onClick={onLogout}>خروج</button>
         <span style={S.headerTitle}>🛡️ لوحة المدير</span>
         <div style={{display:"flex",gap:6}}>
+          <button onClick={toggleAttendanceLock} disabled={lockLoading} title={attendanceLocked?"إلغاء قفل الحضور والانصراف":"قفل الحضور والانصراف (للعطل الرسمية)"}
+            style={{background:attendanceLocked?"#fca5a5":"rgba(255,255,255,0.15)",border:"none",borderRadius:10,color:attendanceLocked?"#7f1d1d":"#fff",fontSize:14,fontWeight:700,padding:"6px 10px",cursor:lockLoading?"wait":"pointer",opacity:lockLoading?0.6:1}}>
+            {attendanceLocked?"🔒":"🔓"}
+          </button>
           <button onClick={()=>hasFace?setShowFaceResetCode(true):setShowFaceEnroll(true)} title="تسجيل/تحديث بصمة الوجه"
             style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,color:"#fff",fontSize:14,fontWeight:700,padding:"6px 10px",cursor:"pointer"}}>
             {hasFace?"🟢":"📷"}
@@ -967,6 +1041,12 @@ function AdminPanel({employee,onLogout}){
           <button onClick={loadAllData} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,color:"#fff",fontSize:12,fontWeight:700,padding:"6px 12px",cursor:"pointer"}}>🔄</button>
         </div>
       </div>
+      {attendanceLocked&&(
+        <div style={{background:"#fee2e2",borderBottom:"1px solid #fca5a5",padding:"8px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+          <p style={{margin:0,fontSize:12,color:"#991b1b",fontWeight:700}}>🔒 تسجيل الحضور والانصراف مقفل حالياً لجميع الموظفين (عطلة رسمية)</p>
+          <button onClick={toggleAttendanceLock} disabled={lockLoading} style={{background:"#fff",border:"1px solid #fca5a5",borderRadius:8,padding:"5px 12px",fontSize:11,fontWeight:700,color:"#991b1b",cursor:"pointer"}}>إلغاء القفل</button>
+        </div>
+      )}
       {!hasFace&&(
         <div style={{background:"#fef9c3",borderBottom:"1px solid #fde047",padding:"8px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
           <p style={{margin:0,fontSize:12,color:"#854d0e",fontWeight:600}}>📷 سجّل بصمة وجهك لتفعيل التحقق الأمني</p>
@@ -983,12 +1063,12 @@ function AdminPanel({employee,onLogout}){
       {showFaceEnroll&&(
         <FaceCaptureModal
           mode="enroll"
-          onDone={(descriptor)=>{
+          onDone={(descriptor,photo)=>{
             const json=JSON.stringify(descriptor);
-            const updated={...employee, faceDescriptor:json};
+            const updated={...employee, faceDescriptor:json, facePhoto:photo||employee.facePhoto};
             Object.assign(employee, updated);
             try{ localStorage.setItem("currentUser",JSON.stringify(updated)); }catch{}
-            gsSaveFaceDescriptor(employee.id, json);
+            gsSaveFaceDescriptor(employee.id, json, photo);
             setHasFace(true);
             setShowFaceEnroll(false);
           }}
@@ -1071,9 +1151,13 @@ function AdminPanel({employee,onLogout}){
                   <div key={i} style={S.recordCard}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
                       <div style={{display:"flex",alignItems:"center",gap:10}}>
-                        <div style={{...S.avatar,width:38,height:38,fontSize:14}}>
-                          {r.emp.name.split(" ").slice(0,2).map(n=>n[0]).join("")}
-                        </div>
+                        {(()=>{ const fullEmp=employees.find(e=>e.id===r.emp.id); return fullEmp&&fullEmp.facePhoto ? (
+                          <img src={fullEmp.facePhoto} alt={r.emp.name} style={{width:38,height:38,borderRadius:"50%",objectFit:"cover"}}/>
+                        ) : (
+                          <div style={{...S.avatar,width:38,height:38,fontSize:14}}>
+                            {r.emp.name.split(" ").slice(0,2).map(n=>n[0]).join("")}
+                          </div>
+                        ); })()}
                         <div>
                           <p style={{margin:0,fontWeight:700,color:"#0f172a",fontSize:14}}>{r.emp.name}</p>
                           <p style={{margin:0,fontSize:11,color:"#64748b"}}>{r.emp.position} · {r.emp.department}</p>
@@ -1402,9 +1486,13 @@ function AdminPanel({employee,onLogout}){
                 </button>
                 {/* بطاقة تفاصيل الموظف */}
                 <div style={{background:"linear-gradient(135deg,#1e1b4b,#4c1d95)",borderRadius:20,padding:24,marginBottom:16,textAlign:"center"}}>
-                  <div style={{...S.avatar,width:72,height:72,fontSize:26,margin:"0 auto 14px",background:"rgba(255,255,255,0.15)"}}>
-                    {selectedEmp.name.split(" ").slice(0,2).map(n=>n[0]).join("")}
-                  </div>
+                  {selectedEmp.facePhoto?(
+                    <img src={selectedEmp.facePhoto} alt={selectedEmp.name} style={{width:72,height:72,borderRadius:"50%",objectFit:"cover",margin:"0 auto 14px",border:"3px solid rgba(255,255,255,0.3)",display:"block"}}/>
+                  ):(
+                    <div style={{...S.avatar,width:72,height:72,fontSize:26,margin:"0 auto 14px",background:"rgba(255,255,255,0.15)"}}>
+                      {selectedEmp.name.split(" ").slice(0,2).map(n=>n[0]).join("")}
+                    </div>
+                  )}
                   <p style={{color:"#fff",fontWeight:800,fontSize:18,margin:"0 0 4px"}}>{selectedEmp.name}</p>
                   <p style={{color:"#a5b4fc",fontSize:13,margin:0}}>{selectedEmp.position}</p>
                 </div>
@@ -1471,9 +1559,13 @@ function AdminPanel({employee,onLogout}){
                   <div key={emp.id} onClick={()=>setSelectedEmp(emp)}
                     style={{...S.recordCard,cursor:"pointer",marginBottom:10,borderRight:`4px solid ${isHereNow?"#22c55e":todayRec?"#6366f1":"#e2e8f0"}`}}>
                     <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:10}}>
-                      <div style={{...S.avatar,width:46,height:46,fontSize:16,flexShrink:0}}>
-                        {emp.name.split(" ").slice(0,2).map(n=>n[0]).join("")}
-                      </div>
+                      {emp.facePhoto?(
+                        <img src={emp.facePhoto} alt={emp.name} style={{width:46,height:46,borderRadius:"50%",objectFit:"cover",flexShrink:0}}/>
+                      ):(
+                        <div style={{...S.avatar,width:46,height:46,fontSize:16,flexShrink:0}}>
+                          {emp.name.split(" ").slice(0,2).map(n=>n[0]).join("")}
+                        </div>
+                      )}
                       <div style={{flex:1}}>
                         <p style={{margin:0,fontWeight:700,color:"#0f172a",fontSize:15}}>{emp.name}</p>
                         <p style={{margin:"2px 0 0",fontSize:12,color:"#64748b"}}>{emp.position} · {emp.department}</p>
@@ -1520,6 +1612,8 @@ function HomeScreen({employee,onLogout}){
   const [showExcuse,setShowExcuse]=useState(false);
   const [activeTab,setActiveTab]=useState("home");
   const [historySubTab,setHistorySubTab]=useState("attendance"); // attendance | requests
+  const [attFilter,setAttFilter]=useState("all"); // all | present | absent
+  const [reqStatusFilter,setReqStatusFilter]=useState("all"); // all | pending | approved | rejected
   const [simulated,setSimulated]=useState(false);
   const [,forceUpdate]=useState(0);
   const [sheetExcuses,setSheetExcuses]=useState(null); // أحدث حالة الطلبات من Google Sheets
@@ -1529,11 +1623,24 @@ function HomeScreen({employee,onLogout}){
   const [hasFace,setHasFace]=useState(!!employee.faceDescriptor);
   const [adminFaces,setAdminFaces]=useState([]); // بصمات وجوه المديرين (تُقبل بديلاً عن وجه الموظف)
   const [showFaceVerify,setShowFaceVerify]=useState(false); // تحقق الوجه قبل تسجيل الحضور/الانصراف
+  const [globalAttendanceLocked,setGlobalAttendanceLocked]=useState(false); // قفل عام يضبطه المدير (أيام العطل)
+  const [allCompanyRecords,setAllCompanyRecords]=useState([]); // سجلات كل الموظفين (لحساب أيام الغياب الفعلية لهذا الموظف)
 
   useEffect(()=>{
     gsGetEmployees().then(list=>{
       setAdminFaces(list.filter(e=>e.isAdmin&&e.faceDescriptor).map(e=>JSON.parse(e.faceDescriptor)));
     }).catch(()=>{});
+  },[]);
+
+  useEffect(()=>{
+    function checkLock(){ gsGetAttendanceLock().then(setGlobalAttendanceLocked).catch(()=>{}); }
+    checkLock();
+    const t=setInterval(checkLock,15000); // تحديث تلقائي كل 15 ثانية
+    return ()=>clearInterval(t);
+  },[]);
+
+  useEffect(()=>{
+    gsGetAttendance().then(setAllCompanyRecords).catch(()=>{});
   },[]);
 
   // جلب أحدث حالة الطلبات (الموافقة/الرفض) من Google Sheets دائماً
@@ -1560,14 +1667,43 @@ function HomeScreen({employee,onLogout}){
   const totalDeductions=records.reduce((a,r)=>a+(r.deduction||0),0);
   const initials=employee.name.split(" ").slice(0,2).map(n=>n[0]).join("");
 
+  // أيام الغياب الفعلية لهذا الموظف خلال آخر 30 يوماً (أيام عمل فعلية حضر فيها موظفون آخرون ولم يحضر بها هو)
+  const absentDays=(()=>{
+    const since=new Date(); since.setDate(since.getDate()-30);
+    const companyDaysSet=new Set(
+      allCompanyRecords.filter(r=>r.checkIn && new Date(r.checkIn)>=since).map(r=>dateKey(r.checkIn))
+    );
+    const myDaysSet=new Set(records.filter(r=>r.checkIn).map(r=>dateKey(r.checkIn)));
+    return [...companyDaysSet].filter(day=>!myDaysSet.has(day) && new Date(day)<=new Date()).sort().reverse();
+  })();
+
+  // سجل موحَّد لعرضه بتبويب "سجل الحضور": أيام حضور فعلية + أيام غياب محسوبة، مع دعم الفلترة
+  const combinedAttendance=[
+    ...weekRecs.map(r=>({...r,_kind:"present"})),
+    ...absentDays.map(day=>({_kind:"absent",_day:day,id:`absent_${day}`})),
+  ].sort((a,b)=>{
+    const da=a._kind==="present"?a.checkIn:a._day;
+    const db=b._kind==="present"?b.checkIn:b._day;
+    return new Date(db)-new Date(da);
+  });
+  const filteredAttendance=combinedAttendance.filter(r=>
+    attFilter==="all" || (attFilter==="present"&&r._kind==="present") || (attFilter==="absent"&&r._kind==="absent")
+  );
+
   const excLeft=MONTHLY_LIMITS.excuses-monthExcuses(employee.id);
   const leaveLeft=MONTHLY_LIMITS.leaves-monthLeaves(employee.id);
   const myRequests=(sheetExcuses!==null?sheetExcuses:getExcuses(employee.id)).sort((a,b)=>b.id-a.id);
+  const filteredRequests=myRequests.filter(r=>reqStatusFilter==="all"||r.status===reqStatusFilter);
 
   function save(updated){ setRecords(updated); saveEmpData(employee.id,updated); }
 
   function startAttendance(){
     if(attendanceLock.current) return; // يمنع الضغط المتكرر السريع
+    if(globalAttendanceLocked){
+      setGpsState("error");
+      setGpsMsg("تسجيل الحضور والانصراف مقفل اليوم من قبل المدير (عطلة رسمية)");
+      return;
+    }
     // التحقق من إمكانية التسجيل (نفس الوقت يُفحص هنا أيضاً تجنباً لفتح الكاميرا بلا فائدة)
     if(!isCheckedIn&&!canCheckIn()){
       setGpsState("error");
@@ -1621,9 +1757,9 @@ function HomeScreen({employee,onLogout}){
     else doCheckIn();
   }
 
-  function doCheckIn(){
+  async function doCheckIn(){
     if(todayRec){ setGpsState("error"); setGpsMsg("تم تسجيل حضورك وانصرافك اليوم مسبقاً"); attendanceLock.current=false; return; }
-    const now=new Date().toISOString();
+    const now=await gsGetServerTime(); // وقت حقيقي من السيرفر، لا يعتمد على ساعة الجهاز
     const status=checkInStatus(now);
     const covered = status==="late" ? findCoveringExcuse(employee.id, now) : null;
     const ded=(status==="late" && !covered)?currentDeduction():0;
@@ -1637,11 +1773,12 @@ function HomeScreen({employee,onLogout}){
     else setGpsMsg("تم تسجيل الحضور بنجاح ✓ في الوقت المحدد");
   }
 
-  function confirmCheckout(){
+  async function confirmCheckout(){
     if(attendanceLock.current) return; // يمنع الضغط المتكرر السريع
     attendanceLock.current=true;
-    const now=new Date().toISOString();
-    const m = nowMin();
+    const now=await gsGetServerTime(); // وقت حقيقي من السيرفر، لا يعتمد على ساعة الجهاز
+    const nowD=new Date(now);
+    const m = nowD.getHours()*60+nowD.getMinutes();
     const isEarly = isEarlyLeaveTime(m);
     const covered = isEarly ? findCoveringExcuse(employee.id, now) : null;
     const earlyDed = (isEarly && !covered) ? currentDeduction() : 0;
@@ -1747,12 +1884,12 @@ function HomeScreen({employee,onLogout}){
       {showFaceEnroll&&(
         <FaceCaptureModal
           mode="enroll"
-          onDone={(descriptor)=>{
+          onDone={(descriptor,photo)=>{
             const json=JSON.stringify(descriptor);
-            const updated={...employee, faceDescriptor:json};
+            const updated={...employee, faceDescriptor:json, facePhoto:photo||employee.facePhoto};
             Object.assign(employee, updated); // تحديث فوري للنسخة الحالية بالجلسة
             try{ localStorage.setItem("currentUser",JSON.stringify(updated)); }catch{}
-            gsSaveFaceDescriptor(employee.id, json);
+            gsSaveFaceDescriptor(employee.id, json, photo);
             setHasFace(true);
             setShowFaceEnroll(false);
           }}
@@ -1847,16 +1984,27 @@ function HomeScreen({employee,onLogout}){
             </div>
           )}
 
+          {/* تنبيه القفل العام */}
+          {globalAttendanceLocked&&(
+            <div style={{background:"#fee2e2",border:"1px solid #fca5a5",borderRadius:14,padding:"12px 16px",marginBottom:14,display:"flex",alignItems:"center",gap:10}}>
+              <span style={{fontSize:20}}>🔒</span>
+              <p style={{margin:0,fontSize:13,color:"#991b1b",fontWeight:700}}>تسجيل الحضور والانصراف مقفل اليوم من قبل المدير (عطلة رسمية)</p>
+            </div>
+          )}
+
           {/* الزر الكبير */}
           <button
-            style={{...S.bigBtn,background:isCheckedIn
+            style={{...S.bigBtn,background:globalAttendanceLocked
+              ?"linear-gradient(135deg,#94a3b8,#64748b)"
+              :isCheckedIn
               ?"linear-gradient(135deg,#ef4444,#b91c1c)"
-              :"linear-gradient(135deg,#22c55e,#15803d)"}}
-            onClick={startAttendance}>
-            <span style={{fontSize:48}}>{isCheckedIn?"👋":"👆"}</span>
-            <span style={S.bigBtnLabel}>{isCheckedIn?"تسجيل الانصراف":"تسجيل الحضور"}</span>
+              :"linear-gradient(135deg,#22c55e,#15803d)",
+              cursor:globalAttendanceLocked?"not-allowed":"pointer",opacity:globalAttendanceLocked?0.85:1}}
+            onClick={startAttendance} disabled={globalAttendanceLocked}>
+            <span style={{fontSize:48}}>{globalAttendanceLocked?"🔒":isCheckedIn?"👋":"👆"}</span>
+            <span style={S.bigBtnLabel}>{globalAttendanceLocked?"مقفل اليوم":isCheckedIn?"تسجيل الانصراف":"تسجيل الحضور"}</span>
             <span style={S.bigBtnSub}>
-              {gpsState==="locating"?"⏳ جارٍ تحديد الموقع...":"اضغط — سيتحقق من موقعك وتوقيتك"}
+              {globalAttendanceLocked?"يوم عطلة رسمية":gpsState==="locating"?"⏳ جارٍ تحديد الموقع...":"اضغط — سيتحقق من موقعك وتوقيتك"}
             </span>
           </button>
 
@@ -1933,10 +2081,43 @@ function HomeScreen({employee,onLogout}){
               ))}
             </div>
 
+            {/* فلترة فرعية حسب التبويب النشط */}
+            <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
+              {historySubTab==="attendance"
+                ? [["all","الكل"],["present","حضور"],["absent","غياب"]].map(([k,label])=>(
+                  <button key={k} onClick={()=>setAttFilter(k)}
+                    style={{flex:1,padding:"7px 4px",borderRadius:9,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,minWidth:60,
+                      background:attFilter===k?"#6366f1":"#f1f5f9",color:attFilter===k?"#fff":"#64748b"}}>
+                    {label}
+                  </button>
+                ))
+                : [["all","الكل"],["pending","قيد المراجعة"],["approved","موافَق"],["rejected","مرفوض"]].map(([k,label])=>(
+                  <button key={k} onClick={()=>setReqStatusFilter(k)}
+                    style={{flex:1,padding:"7px 4px",borderRadius:9,border:"none",cursor:"pointer",fontSize:11,fontWeight:600,minWidth:60,
+                      background:reqStatusFilter===k?"#6366f1":"#f1f5f9",color:reqStatusFilter===k?"#fff":"#64748b"}}>
+                    {label}
+                  </button>
+                ))
+              }
+            </div>
+
             {historySubTab==="attendance"&&(
-              weekRecs.length===0
+              filteredAttendance.length===0
               ?<div style={S.empty}><span style={{fontSize:48}}>📋</span><p style={{color:"#94a3b8",marginTop:12}}>لا يوجد سجل بعد</p></div>
-              :weekRecs.map(r=>{
+              :filteredAttendance.map(r=>{
+                if(r._kind==="absent"){
+                  return(
+                    <div key={r.id} style={{...S.recordCard,borderRight:"4px solid #ef4444"}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                        <div>
+                          <p style={{margin:0,fontSize:13,fontWeight:700,color:"#334155"}}>{dayName(r._day)}</p>
+                          <p style={{margin:"1px 0 0",fontSize:11,color:"#94a3b8"}}>{fmtDateShort(r._day)}</p>
+                        </div>
+                        <span style={{...S.badge,background:"#fee2e2",color:"#991b1b"}}>غائب</span>
+                      </div>
+                    </div>
+                  );
+                }
                 const dur=duration(r.checkIn,r.checkOut);
                 return(
                   <div key={r.id} style={{...S.recordCard,borderRight:`4px solid ${r.status==="late"?"#f59e0b":"#22c55e"}`}}>
@@ -1964,9 +2145,9 @@ function HomeScreen({employee,onLogout}){
             )}
 
             {historySubTab==="requests"&&(
-              myRequests.length===0
+              filteredRequests.length===0
               ?<div style={S.empty}><span style={{fontSize:48}}>📭</span><p style={{color:"#94a3b8",marginTop:12}}>لا يوجد طلبات</p></div>
-              :myRequests.map(req=>{
+              :filteredRequests.map(req=>{
                 const excuseEndIso = req.type==="excuse" && req.excuseStart
                   ? new Date(new Date(req.excuseStart).getTime()+RULES.excuseHours*3600000).toISOString()
                   : null;
@@ -2043,13 +2224,18 @@ function HomeScreen({employee,onLogout}){
             ))}
             <div style={{background:hasFace?"linear-gradient(135deg,#dcfce7,#bbf7d0)":"linear-gradient(135deg,#fef9c3,#fef08a)",borderRadius:14,padding:16,marginTop:12,border:`1px solid ${hasFace?"#86efac":"#fde047"}`}}>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:hasFace?0:10}}>
-                <div>
-                  <p style={{margin:"0 0 2px",fontWeight:700,color:hasFace?"#166534":"#854d0e",fontSize:14}}>
-                    {hasFace?"✅ بصمة الوجه مسجَّلة":"📷 بصمة الوجه غير مسجَّلة"}
-                  </p>
-                  <p style={{margin:0,fontSize:11,color:hasFace?"#15803d":"#92400e"}}>
-                    {hasFace?"تُستخدم للتحقق من هويتك عند تسجيل الحضور والانصراف":"سجّلها الآن لتفعيل التحقق عند تسجيل الحضور والانصراف"}
-                  </p>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  {employee.facePhoto&&(
+                    <img src={employee.facePhoto} alt="صورة الوجه المسجَّلة" style={{width:44,height:44,borderRadius:"50%",objectFit:"cover",border:"2px solid #fff",boxShadow:"0 1px 4px rgba(0,0,0,0.15)"}}/>
+                  )}
+                  <div>
+                    <p style={{margin:"0 0 2px",fontWeight:700,color:hasFace?"#166534":"#854d0e",fontSize:14}}>
+                      {hasFace?"✅ بصمة الوجه مسجَّلة":"📷 بصمة الوجه غير مسجَّلة"}
+                    </p>
+                    <p style={{margin:0,fontSize:11,color:hasFace?"#15803d":"#92400e"}}>
+                      {hasFace?"تُستخدم للتحقق من هويتك عند تسجيل الحضور والانصراف":"سجّلها الآن لتفعيل التحقق عند تسجيل الحضور والانصراف"}
+                    </p>
+                  </div>
                 </div>
               </div>
               <button onClick={()=>hasFace?setShowFaceResetCode(true):setShowFaceEnroll(true)}
