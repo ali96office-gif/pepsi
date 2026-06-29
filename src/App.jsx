@@ -103,10 +103,11 @@ async function gsGetServerTime() {
   try {
     const response = await fetch(`${GS_URL}?action=getServerTime`);
     const data = await response.json();
-    return data.now || new Date().toISOString(); // fallback لساعة الجهاز فقط لو فشل الاتصال
+    if(!data.now) throw new Error("no time");
+    return data.now;
   } catch (e) {
-    console.warn("gsGetServerTime failed, falling back to local time", e);
-    return new Date().toISOString();
+    console.warn("gsGetServerTime failed", e);
+    throw new Error("تعذّر الاتصال بالسيرفر للتحقق من الوقت. تحقق من الإنترنت وحاول مجدداً.");
   }
 }
 
@@ -1759,15 +1760,24 @@ function HomeScreen({employee,onLogout}){
 
   async function doCheckIn(){
     if(todayRec){ setGpsState("error"); setGpsMsg("تم تسجيل حضورك وانصرافك اليوم مسبقاً"); attendanceLock.current=false; return; }
-    const now=await gsGetServerTime(); // وقت حقيقي من السيرفر، لا يعتمد على ساعة الجهاز
+    let now;
+    try {
+      now = await gsGetServerTime();
+    } catch(e) {
+      setGpsState("error");
+      setGpsMsg(e.message || "تعذّر الاتصال بالسيرفر. تحقق من الإنترنت وحاول مجدداً.");
+      attendanceLock.current=false;
+      return;
+    }
     const status=checkInStatus(now);
     const covered = status==="late" ? findCoveringExcuse(employee.id, now) : null;
     const ded=(status==="late" && !covered)?currentDeduction():0;
     const newRecord={id:Date.now(),checkIn:now,checkOut:null,status,deduction:ded||undefined,excused:!!covered};
     save([...records,newRecord]);
-    gsSaveAttendance(employee, newRecord); // حفظ في Google Sheets
+    gsSaveAttendance(employee, newRecord);
     setGpsState("ok");
     attendanceLock.current=false;
+    if(status==="invalid"){ setGpsState("error"); setGpsMsg("خارج وقت الدوام المسموح"); return; }
     if(status==="late"&&covered) setGpsMsg("تم تسجيل الحضور — تأخير مغطّى بزمنية معتمدة ✓ بدون خصم");
     else if(status==="late") setGpsMsg(`تم تسجيل الحضور — ⚠️ تأخير — سيُطرح ${ded.toLocaleString()} دينار`);
     else setGpsMsg("تم تسجيل الحضور بنجاح ✓ في الوقت المحدد");
