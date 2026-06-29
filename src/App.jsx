@@ -473,14 +473,14 @@ function FaceCaptureModal({mode,acceptedDescriptors,onDone,onCancel}){
         let photo="";
         try{
           const canvas=document.createElement("canvas");
-          const targetWidth=160;
+          const targetWidth=80; // أصغر لضمان الحفظ في Sheets
           const scale=targetWidth/videoRef.current.videoWidth;
           canvas.width=targetWidth;
           canvas.height=videoRef.current.videoHeight*scale;
           const ctx=canvas.getContext("2d");
-          ctx.translate(canvas.width,0); ctx.scale(-1,1); // نفس انعكاس المعاينة (مرآة) لصورة طبيعية المظهر
+          ctx.translate(canvas.width,0); ctx.scale(-1,1);
           ctx.drawImage(videoRef.current,0,0,canvas.width,canvas.height);
-          photo=canvas.toDataURL("image/jpeg",0.5);
+          photo=canvas.toDataURL("image/jpeg",0.3); // جودة أقل لحجم أصغر
         }catch(e){ /* تجاهل فشل التقاط الصورة، البصمة الرقمية تكفي للتحقق */ }
         stopCamera();
         setStatus("success"); setMessage("تم تسجيل الوجه بنجاح ✓");
@@ -1770,6 +1770,13 @@ function HomeScreen({employee,onLogout}){
       return;
     }
     const status=checkInStatus(now);
+    // ← منع التسجيل خارج وقت الدوام نهائياً
+    if(status==="invalid"){
+      setGpsState("error");
+      setGpsMsg("خارج وقت الدوام المسموح — لا يمكن تسجيل الحضور");
+      attendanceLock.current=false;
+      return;
+    }
     const covered = status==="late" ? findCoveringExcuse(employee.id, now) : null;
     const ded=(status==="late" && !covered)?currentDeduction():0;
     const newRecord={id:Date.now(),checkIn:now,checkOut:null,status,deduction:ded||undefined,excused:!!covered};
@@ -1777,7 +1784,6 @@ function HomeScreen({employee,onLogout}){
     gsSaveAttendance(employee, newRecord);
     setGpsState("ok");
     attendanceLock.current=false;
-    if(status==="invalid"){ setGpsState("error"); setGpsMsg("خارج وقت الدوام المسموح"); return; }
     if(status==="late"&&covered) setGpsMsg("تم تسجيل الحضور — تأخير مغطّى بزمنية معتمدة ✓ بدون خصم");
     else if(status==="late") setGpsMsg(`تم تسجيل الحضور — ⚠️ تأخير — سيُطرح ${ded.toLocaleString()} دينار`);
     else setGpsMsg("تم تسجيل الحضور بنجاح ✓ في الوقت المحدد");
