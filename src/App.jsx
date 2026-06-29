@@ -502,9 +502,9 @@ function FaceCaptureModal({mode,acceptedDescriptors,onDone,onCancel}){
 
 function ExcuseModal({employee,onClose}){
   const [type,setType]=useState("excuse"); // excuse | leave
-  const [excuseKind,setExcuseKind]=useState("late"); // late (تأخير دخول) | early (خروج مبكر)
   const [excuseDate,setExcuseDate]=useState(()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,"0")}-${String(n.getDate()).padStart(2,"0")}`; });
-  const [excuseHour,setExcuseHour]=useState(excuseKind==="late"?8:12);
+  const [excuseHour,setExcuseHour]=useState(8);
+  const excuseKind = excuseHour<12 ? "late" : "early"; // تُحدَّد تلقائياً حسب الساعة، لا تحتاج اختياراً يدوياً
   const [leaveDate,setLeaveDate]=useState(()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,"0")}-${String(n.getDate()).padStart(2,"0")}`; });
   const [reason,setReason]=useState("");
   const [submitted,setSubmitted]=useState(false);
@@ -605,20 +605,11 @@ function ExcuseModal({employee,onClose}){
             {/* تفاصيل الزمنية: النوع (تأخير/خروج) + التاريخ + ساعة البداية */}
             {type==="excuse" && (
               <>
-                <label style={{color:"#475569",fontSize:13,fontWeight:600}}>نوع الزمنية</label>
-                <div style={{display:"flex",gap:10,margin:"6px 0 14px"}}>
-                  {[
-                    {k:"late", label:"تأخير دخول"},
-                    {k:"early",label:"خروج مبكر"},
-                  ].map(({k,label})=>(
-                    <button key={k} onClick={()=>{setExcuseKind(k);setExcuseHour(k==="late"?8:12);setDupError("");}}
-                      style={{flex:1,padding:"9px 6px",borderRadius:10,border:"2px solid",cursor:"pointer",fontSize:13,fontWeight:700,
-                        borderColor:excuseKind===k?"#6366f1":"#e2e8f0",
-                        background:excuseKind===k?"#ede9fe":"#f8fafc",
-                        color:excuseKind===k?"#4f46e5":"#64748b"}}>
-                      {label}
-                    </button>
-                  ))}
+                <label style={{color:"#475569",fontSize:13,fontWeight:600}}>نوع الزمنية (يُحدَّد تلقائياً حسب الساعة)</label>
+                <div style={{margin:"6px 0 14px",padding:"10px 14px",borderRadius:10,fontSize:13,fontWeight:700,textAlign:"center",
+                  background:excuseKind==="late"?"#ede9fe":"#fef3c7",
+                  color:excuseKind==="late"?"#4f46e5":"#92400e"}}>
+                  {excuseKind==="late"?"تأخير دخول":"خروج مبكر"}
                 </div>
 
                 <div style={{display:"flex",gap:10,marginBottom:14}}>
