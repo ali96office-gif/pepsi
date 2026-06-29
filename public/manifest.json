@@ -1,21 +1,26 @@
 {
-  "short_name": "نظام الحضور",
+  "short_name": "بصمة",
   "name": "نظام الحضور والانصراف",
+  "description": "نظام متكامل لتسجيل حضور وانصراف الموظفين",
+  "id": "pepsi-attendance-app",
   "icons": [
     {
       "src": "icon-192.png",
       "type": "image/png",
-      "sizes": "192x192"
+      "sizes": "192x192",
+      "purpose": "any maskable"
     },
     {
       "src": "icon-512.png",
       "type": "image/png",
-      "sizes": "512x512"
+      "sizes": "512x512",
+      "purpose": "any maskable"
     }
   ],
-  "start_url": ".",
+  "screenshots": [],
+  "start_url": "/",
   "display": "standalone",
-  "theme_color": "#0f172a",
+  "theme_color": "#1e1b4b",
   "background_color": "#0f172a",
   "orientation": "portrait",
   "dir": "rtl",
