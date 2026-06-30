@@ -1607,6 +1607,37 @@ function AdminPanel({employee,onLogout}){
 // ══════════════════════════════════════════════════════════════
 function HomeScreen({employee,onLogout}){
   const [records,setRecords]=useState(()=>getEmpData(employee.id));
+  const serverOffsetRef=useRef(0); // الفرق بين وقت السيرفر ووقت الجهاز (مليثانية)
+  const [offsetReady,setOffsetReady]=useState(false);
+
+  useEffect(()=>{
+    gsGetServerTime().then(serverIso=>{
+      serverOffsetRef.current = new Date(serverIso).getTime() - Date.now();
+      setOffsetReady(true);
+    }).catch(()=>setOffsetReady(true)); // لو فشل الجلب، نكمل بفارق صفر (ساعة الجهاز) كحل احتياطي للعرض فقط
+  },[]);
+
+  // مصدر الحقيقة هو Google Sheets لا localStorage وحدها (localStorage قد تكون فارغة على جهاز/متصفح جديد
+  // مما كان يسبب اعتقاد التطبيق بعدم وجود تسجيل لليوم والسماح بتسجيل حضور مكرر)، ونحدّثها دورياً
+  // ليعكس فوراً أي تغيير (مثل إلغاء خصم بعد موافقة على زمنية)
+  useEffect(()=>{
+    function refreshMyRecords(){
+      gsGetAttendance().then(all=>{
+        const mine=all.filter(r=>String(r.empId).trim()===String(employee.id).trim()).map(r=>({
+          id:new Date(r.checkIn).getTime(),
+          checkIn:r.checkIn,
+          checkOut:r.checkOut||null,
+          status:r.status,
+          deduction:Number(r.deduction)||0,
+        }));
+        if(mine.length>0){ setRecords(mine); saveEmpData(employee.id,mine); }
+      }).catch(()=>{});
+    }
+    refreshMyRecords();
+    const t=setInterval(refreshMyRecords,20000); // كل 20 ثانية
+    return ()=>clearInterval(t);
+  },[employee.id]);
+
   const [gpsState,setGpsState]=useState(null);
   const [gpsMsg,setGpsMsg]=useState("");
   const [showCheckout,setShowCheckout]=useState(false);
@@ -1659,7 +1690,7 @@ function HomeScreen({employee,onLogout}){
   // قراءة مبلغ الخصم الحالي
   function currentDeduction(){ try{ return JSON.parse(localStorage.getItem("lateDeduction")||JSON.stringify(RULES.lateDeduction)); }catch{ return RULES.lateDeduction; } }
 
-  const todayKey=new Date().toDateString();
+  const todayKey=new Date(Date.now()+serverOffsetRef.current).toDateString();
   const todayRec=records.find(r=>new Date(r.checkIn).toDateString()===todayKey);
   const isCheckedIn=todayRec&&!todayRec.checkOut;
 
@@ -1700,6 +1731,11 @@ function HomeScreen({employee,onLogout}){
 
   function startAttendance(){
     if(attendanceLock.current) return; // يمنع الضغط المتكرر السريع
+    if(!offsetReady){
+      setGpsState("error");
+      setGpsMsg("جارٍ المزامنة مع السيرفر — أعد المحاولة خلال لحظات");
+      return;
+    }
     if(globalAttendanceLocked){
       setGpsState("error");
       setGpsMsg("تسجيل الحضور والانصراف مقفل اليوم من قبل المدير (عطلة رسمية)");
