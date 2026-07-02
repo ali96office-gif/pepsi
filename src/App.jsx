@@ -1341,8 +1341,14 @@ function AdminPanel({employee,onLogout}){
             const empDed=empRecordsThisMonth.reduce((a,r)=>a+(r.deduction||0),0);
             const empWorkedDays=new Set(empRecordsThisMonth.map(r=>dateKey(r.checkIn)));
 
-            // أيام الغياب = أيام العمل الفعلية (سجّل فيها أحد) التي لم يحضر بها هذا الموظف
-            const absentDays=[...workingDaysSet].filter(day=>!empWorkedDays.has(day)).length;
+            // أيام الإجازة الموافق عليها لهذا الشهر
+            const approvedLeaveDays=new Set(
+              allRequests.filter(r=>r.empId===emp.id && r.type==="leave" && r.status==="approved" && r.leaveDate)
+                .map(r=>dateKey(r.leaveDate))
+            );
+
+            // أيام الغياب = أيام العمل الفعلية التي لم يحضر بها الموظف ولم تكن إجازة موافق عليها
+            const absentDays=[...workingDaysSet].filter(day=>!empWorkedDays.has(day) && !approvedLeaveDays.has(day)).length;
             const base=Number(emp.salary)||0;
             const dailyRateForEmp=workDaysForMonth>0 ? base/workDaysForMonth : 0;
             const absenceDeduction=Math.round(absentDays*dailyRateForEmp);
@@ -1752,9 +1758,10 @@ function HomeScreen({employee,onLogout}){
       setGpsMsg("وقت تسجيل الانصراف من 12:00 م إلى 11:59 م فقط");
       return;
     }
-    // إذا لا يوجد أي بصمة وجه مسجّلة (لا للموظف ولا لأي مدير)، نتجاوز التحقق لتجنّب تعطيل التسجيل
-    if(!employee.faceDescriptor && adminFaces.length===0){
-      handleAttendance();
+    // إذا لا يوجد بصمة وجه مسجّلة للموظف، يُمنع التسجيل
+    if(!employee.faceDescriptor){
+      setGpsState("error");
+      setGpsMsg("يجب تسجيل بصمة الوجه أولاً من صفحة الملف الشخصي قبل تسجيل الحضور");
       return;
     }
     setShowFaceVerify(true);
@@ -2326,7 +2333,10 @@ export default function App(){
   const [user,setUser]=useState(()=>{
     try{ return JSON.parse(localStorage.getItem("currentUser")||"null"); }catch{ return null; }
   });
-  const [adminVerified,setAdminVerified]=useState(false); // يُطلب من جديد بكل تحميل/تحديث للصفحة، وليس مخزَّناً بشكل دائم
+  const [adminVerified,setAdminVerified]=useState(false);
+
+  // كشف نوع الجهاز
+  const isDesktop = window.innerWidth >= 1024;
 
   function handleLogin(u){
     try{ localStorage.setItem("currentUser",JSON.stringify(u)); }catch{}
@@ -2338,11 +2348,42 @@ export default function App(){
     setAdminVerified(false);
   }
 
-  if(!user) return <LoginScreen onLogin={handleLogin}/>;
+  // واجهة الحاسبة - شاشة دخول
+  if(!user){
+    if(isDesktop){
+      return (
+        <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0f172a,#1e1b4b)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <div style={{display:"flex",gap:48,alignItems:"center",maxWidth:1100,width:"100%",padding:"0 40px"}}>
+            {/* يسار - معلومات */}
+            <div style={{flex:1,color:"#fff"}}>
+              <div style={{fontSize:64,marginBottom:16}}>👆</div>
+              <h1 style={{fontSize:42,fontWeight:800,margin:"0 0 12px",lineHeight:1.2}}>نظام الحضور<br/>والانصراف</h1>
+              <p style={{fontSize:18,color:"#94a3b8",margin:"0 0 32px",lineHeight:1.7}}>
+                نظام متكامل لتسجيل حضور وانصراف الموظفين<br/>
+                مع التحقق بالوجه وربط Google Sheets
+              </p>
+              <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                {[["🔒","تسجيل حضور آمن بالتحقق من الوجه"],["📊","تقارير ولوحة تحكم للمدير"],["☁️","مزامنة فورية مع Google Sheets"]].map(([icon,text])=>(
+                  <div key={text} style={{display:"flex",alignItems:"center",gap:12,color:"#cbd5e1"}}>
+                    <span style={{fontSize:20}}>{icon}</span>
+                    <span style={{fontSize:15}}>{text}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* يمين - نموذج الدخول */}
+            <div style={{background:"#fff",borderRadius:24,padding:40,width:400,boxShadow:"0 25px 60px rgba(0,0,0,0.4)"}}>
+              <LoginScreen onLogin={handleLogin}/>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return <LoginScreen onLogin={handleLogin}/>;
+  }
 
   if(user.isAdmin){
     if(!user.faceDescriptor){
-      // لا يمكن فرض التحقق على مدير لم يسجّل وجهه بعد — يدخل مباشرة، ويُفضَّل تسجيل وجهه من لوحته
       return <AdminPanel employee={user} onLogout={handleLogout}/>;
     }
     if(!adminVerified){
@@ -2355,7 +2396,26 @@ export default function App(){
         />
       );
     }
+    // لوحة المدير على الحاسبة - بعرض كامل
+    if(isDesktop){
+      return (
+        <div style={{minHeight:"100vh",background:"#f1f5f9"}}>
+          <AdminPanel employee={user} onLogout={handleLogout}/>
+        </div>
+      );
+    }
     return <AdminPanel employee={user} onLogout={handleLogout}/>;
+  }
+
+  // واجهة الموظف على الحاسبة
+  if(isDesktop){
+    return (
+      <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0f172a,#1e1b4b)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div style={{width:430,boxShadow:"0 25px 60px rgba(0,0,0,0.5)",borderRadius:40,overflow:"hidden"}}>
+          <HomeScreen employee={user} onLogout={handleLogout}/>
+        </div>
+      </div>
+    );
   }
 
   return <HomeScreen employee={user} onLogout={handleLogout}/>;
